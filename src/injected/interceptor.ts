@@ -1,5 +1,7 @@
 import { MESSAGE_SOURCE, RTC_CHANNEL_NAMES, RTC_CAPTION_BATCH_MS } from '../utils/constants';
 import { parseCaptionMessage, parseDeviceInfo, parseDeviceCollection, parseChatMessage, dumpAllStrings } from '../utils/rtc-message-parser';
+import { decodeProtobuf } from '../utils/protobuf-decoder';
+import { encodeUpdateMediaSession } from '../utils/protobuf-encoder';
 import { MSG, type RtcCaptionMessage } from '../utils/types';
 
 (function () {
@@ -55,8 +57,30 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
     try {
       url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
-      if (url.includes('CreateMeetingDevice') || url.includes('UpdateMediaSession') || url.includes('JoinMeeting')) {
-        // Capture headers for later use
+      // Log ALL meet.google.com requests to sniff native language change format
+      if (url.includes('meet.google.com/') && init?.method === 'POST') {
+        const shortUrl = url.replace('https://meet.google.com/', '');
+        let bodySummary = '';
+        try {
+          if (init.body) {
+            if (typeof init.body === 'string') {
+              bodySummary = init.body.substring(0, 300);
+            } else {
+              const raw = init.body instanceof ArrayBuffer ? new Uint8Array(init.body)
+                : init.body instanceof Uint8Array ? init.body : null;
+              if (raw) {
+                // Try as text first
+                try { bodySummary = 'text:' + new TextDecoder().decode(raw).substring(0, 300); }
+                catch { bodySummary = 'binary:' + raw.length + 'bytes'; }
+              }
+            }
+          }
+        } catch { /* */ }
+        debug('FETCH SNIFF', shortUrl, bodySummary);
+      }
+
+      // Capture headers and session from any Google Meet $rpc API call
+      if (url.includes('meet.google.com/$rpc/') || url.includes('meet.google.com/hangouts/')) {
         if (init?.headers) {
           const headerObj: Record<string, string> = {};
           if (init.headers instanceof Headers) {
@@ -64,7 +88,10 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
           } else if (Array.isArray(init.headers)) {
             for (const [key, value] of init.headers) { headerObj[key] = value; }
           } else {
-            Object.assign(headerObj, init.headers);
+            // Normalize keys to lowercase for plain objects
+            for (const [key, value] of Object.entries(init.headers as Record<string, string>)) {
+              headerObj[key.toLowerCase()] = value;
+            }
           }
           capturedHeaders = headerObj;
         }
@@ -72,13 +99,31 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
         // Try to extract session ID from request body
         if (init?.body) {
           try {
-            const bodyStr = typeof init.body === 'string' ? init.body : new TextDecoder().decode(init.body as ArrayBuffer);
-            const sessionMatch = bodyStr.match(/\b[A-Za-z0-9_-]{28}\b/);
-            if (sessionMatch) capturedSessionId = capturedSessionId || sessionMatch[0];
-          } catch { /* not text */ }
+            let raw: Uint8Array | null = null;
+            if (init.body instanceof ArrayBuffer) raw = new Uint8Array(init.body);
+            else if (init.body instanceof Uint8Array) raw = init.body;
+            else if (typeof init.body === 'string') raw = new TextEncoder().encode(init.body);
+
+            if (raw) {
+              // Look for session ID in text representation
+              const bodyStr = new TextDecoder().decode(raw);
+              const sessionMatch = bodyStr.match(/\b[A-Za-z0-9_-]{28}\b/);
+              if (sessionMatch) capturedSessionId = capturedSessionId || sessionMatch[0];
+
+              // Decode native UpdateMediaSession requests to discover protobuf field structure
+              if (url.includes('UpdateMediaSession')) {
+                const fields = decodeProtobuf(raw);
+                debug('PROTO SNIFF UpdateMediaSession request:', JSON.stringify(fields, (_k, v) =>
+                  v instanceof Uint8Array ? `<bytes:${v.length}>` : typeof v === 'bigint' ? Number(v) : v, 2));
+              }
+            }
+          } catch { /* not text / decode error */ }
         }
 
-        debug('Captured API context from', url.split('/').pop());
+        const endpoint = url.split('/').pop();
+        debug('Captured API context from', endpoint,
+          '| sessionId:', capturedSessionId ? 'YES' : 'no',
+          '| auth:', capturedHeaders['authorization'] ? 'YES' : 'no');
       }
     } catch { /* silent */ }
 
@@ -147,6 +192,25 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
     });
   };
 
+  // XHR interception — Google Meet uses XHR for some API calls (e.g. media_sessions/modify)
+  const origXhrOpen = XMLHttpRequest.prototype.open;
+  const origXhrSend = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function (method: string, url: string | URL, ...rest: unknown[]) {
+    (this as XMLHttpRequest & { __meetUrl?: string }).__meetUrl = String(url);
+    return (origXhrOpen as Function).call(this, method, url, ...rest);
+  };
+
+  XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
+    const xhrUrl = (this as XMLHttpRequest & { __meetUrl?: string }).__meetUrl ?? '';
+    if (xhrUrl.includes('meet.google.com/')) {
+      const shortUrl = xhrUrl.replace('https://meet.google.com/', '');
+      const bodySummary = typeof body === 'string' ? body.substring(0, 500) : (body ? '<binary>' : '<empty>');
+      debug('XHR SNIFF', shortUrl, bodySummary);
+    }
+    return origXhrSend.call(this, body);
+  };
+
   // Listen for language change requests from content script
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
@@ -158,6 +222,21 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
     changeCaptionLanguage(langCode);
   });
 
+  function persistLanguageCode(langCode: string): void {
+    try {
+      const entry = Object.entries(localStorage)
+        .find(([key]) => key.includes('rt_g3jartmcups-'));
+      if (!entry) return;
+      const [key, value] = entry;
+      const data = JSON.parse(value);
+      data[2] = langCode;
+      localStorage.setItem(key, JSON.stringify(data));
+      debug('Persisted language code to localStorage key', key);
+    } catch (e) {
+      debug('Failed to persist language code:', e);
+    }
+  }
+
   async function changeCaptionLanguage(langCode: string): Promise<void> {
     if (!capturedSessionId || !capturedHeaders['authorization']) {
       debug('Cannot change language: no captured session/headers');
@@ -165,20 +244,9 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
     }
 
     try {
-      // Use the captured context to call Google Meet's API
-      const url = `https://meet.google.com/$rpc/google.rtc.meetings.v1.MeetingDeviceService/UpdateMediaSession`;
-      await originalFetch.call(window, url, {
-        method: 'POST',
-        headers: {
-          ...capturedHeaders,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          sessionId: capturedSessionId,
-          captionLanguage: langCode,
-        }),
-      });
-      debug('Language change API call sent for', langCode);
+      // TEMPORARILY DISABLED — sniffing native format first
+      debug('Language change requested for', langCode, '— API call disabled, switch via Meet UI and check SNIFF logs');
+      persistLanguageCode(langCode);
     } catch (e) {
       debug('Language change API call failed:', e);
     }
