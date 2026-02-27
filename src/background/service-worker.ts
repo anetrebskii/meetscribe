@@ -46,6 +46,8 @@ const deviceMap = new Map<string, string>(); // deviceId → display name
 let currentMeetingCode: string | null = null;
 // Track recently active device IDs for DOM-based speaker name correlation
 const recentActiveDevices: Array<{ deviceId: string; timestamp: number }> = [];
+let keepaliveDisconnectTimer: ReturnType<typeof setTimeout> | null = null;
+const KEEPALIVE_GRACE_MS = 120_000; // 2 minutes grace before ending meeting
 
 // --- Initialization ---
 
@@ -99,19 +101,32 @@ chrome.action.onClicked.addListener(async (tab) => {
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === KEEPALIVE_PORT_NAME) {
+    // Cancel pending disconnect timer — tab reconnected
+    if (keepaliveDisconnectTimer) {
+      clearTimeout(keepaliveDisconnectTimer);
+      keepaliveDisconnectTimer = null;
+    }
     port.onMessage.addListener(() => {
       // ping received
     });
     port.onDisconnect.addListener(() => {
-      // Client disconnected — if this was the meeting tab, end the meeting
+      // Don't end immediately — tab may be backgrounded (timers throttled).
+      // Wait for a grace period; if no reconnect, then end.
       if (currentMeetingCode) {
-        const meetingId = getCurrentMeetingId();
-        if (meetingId) {
-          endMeeting(meetingId);
-          broadcastToPopup({ type: 'meeting_ended', meetingId });
-        }
-        currentMeetingCode = null;
-        updateExtensionIcon(false);
+        const code = currentMeetingCode;
+        keepaliveDisconnectTimer = setTimeout(() => {
+          keepaliveDisconnectTimer = null;
+          // Only end if no new keepalive reconnected in the meantime
+          if (currentMeetingCode === code) {
+            const meetingId = getCurrentMeetingId();
+            if (meetingId) {
+              endMeeting(meetingId);
+              broadcastToPopup({ type: 'meeting_ended', meetingId });
+            }
+            currentMeetingCode = null;
+            updateExtensionIcon(false);
+          }
+        }, KEEPALIVE_GRACE_MS);
       }
     });
   } else if (port.name === POPUP_PORT_NAME) {

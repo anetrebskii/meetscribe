@@ -29,6 +29,13 @@ import { MSG, KEEPALIVE_PORT_NAME } from '../utils/types';
 
   connectKeepalive();
 
+  // Reconnect immediately when tab regains focus (timers throttled in background)
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && !port) {
+      connectKeepalive();
+    }
+  });
+
   // MAIN world → service worker relay
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;

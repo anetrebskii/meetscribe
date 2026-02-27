@@ -248,6 +248,11 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
 
   setInterval(flushCaptionQueue, RTC_CAPTION_BATCH_MS);
 
+  // Flush immediately when tab regains focus (timers are throttled in background)
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) flushCaptionQueue();
+  });
+
   function handleCaptionsMessage(data: Uint8Array): void {
     const caption = parseCaptionMessage(data);
     if (!caption || !caption.text) return;
