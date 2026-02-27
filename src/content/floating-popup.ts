@@ -532,6 +532,9 @@ import { LANGUAGE_CODES } from '../utils/constants';
       if (textEl) textEl.textContent = entry.text;
       const speakerEl = existing.querySelector('.speaker');
       if (speakerEl) speakerEl.textContent = entry.speaker;
+      if (autoScroll) {
+        transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      }
     }
   }
 

@@ -99,7 +99,7 @@ chrome.action.onClicked.addListener(async (tab) => {
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === KEEPALIVE_PORT_NAME) {
-    // Cancel pending disconnect timer — tab reconnected
+    // Cancel pending disconnect timer — tab reconnected (normal during SW restarts, tab cycling)
     if (keepaliveDisconnectTimer) {
       clearTimeout(keepaliveDisconnectTimer);
       keepaliveDisconnectTimer = null;
@@ -192,6 +192,12 @@ async function handleMessage(
   switch (message.type) {
     case MSG.MEETING_CODE: {
       const msg = message as unknown as { meetingCode: string };
+      // If we already have a live meeting with a different code, end it
+      const existingId = getCurrentMeetingId();
+      if (existingId && currentMeetingCode && currentMeetingCode !== msg.meetingCode) {
+        endMeeting(existingId);
+        broadcastToPopup({ type: 'meeting_ended', meetingId: existingId });
+      }
       currentMeetingCode = msg.meetingCode;
       // Create meeting immediately so it appears in the list before anyone speaks
       ensureMeeting(msg.meetingCode);

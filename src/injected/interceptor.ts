@@ -354,10 +354,25 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
   let origCreateDataChannel: (label: string, init?: RTCDataChannelInit) => RTCDataChannel;
 
   const channelMessageCounts = new Map<string, number>();
+  // Track active channels per label so we can detect dead ones and avoid duplicates
+  const activeChannels = new Map<string, RTCDataChannel>();
+
+  function isChannelAlive(label: string): boolean {
+    const ch = activeChannels.get(label);
+    return !!ch && (ch.readyState === 'open' || ch.readyState === 'connecting');
+  }
+
+  function trackChannel(label: string, channel: RTCDataChannel): void {
+    activeChannels.set(label, channel);
+    const cleanup = () => { if (activeChannels.get(label) === channel) activeChannels.delete(label); };
+    channel.addEventListener('close', cleanup);
+    channel.addEventListener('error', cleanup);
+  }
 
   function listenToChannel(channel: RTCDataChannel): void {
     const label = channel.label;
     debug(`RTC: listenToChannel("${label}") readyState=${channel.readyState} id=${channel.id}`);
+    trackChannel(label, channel);
 
     channel.addEventListener('open', () => {
       debug(`RTC: channel "${label}" opened (id=${channel.id})`);
@@ -409,6 +424,9 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
   }
 
   function openChannel(pc: RTCPeerConnection, label: string): void {
+    // Don't create a duplicate if a healthy channel already exists
+    if (isChannelAlive(label)) return;
+
     try {
       const channel = origCreateDataChannel.call(pc, label, {
         ordered: true,
@@ -420,18 +438,23 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
       listenToChannel(channel);
 
       channel.addEventListener('close', () => {
-        debug(`RTC: ${label} channel closed, recreating`);
-        openChannel(pc, label);
+        debug(`RTC: ${label} channel closed, will retry`);
+        // Retry after a delay — the PC might be temporarily disconnected
+        setTimeout(() => {
+          if (meetPeerConnection === pc) openChannel(pc, label);
+        }, 2000);
       });
     } catch (e) {
       debug(`RTC: failed to open ${label} channel`, e);
+      // Retry after delay — the PC may recover
+      setTimeout(() => {
+        if (meetPeerConnection === pc) openChannel(pc, label);
+      }, 5000);
     }
   }
 
-  function onMeetConnectionFound(pc: RTCPeerConnection): void {
-    if (meetPeerConnection === pc) return;
+  function ensureChannels(pc: RTCPeerConnection): void {
     meetPeerConnection = pc;
-    log('RTC: discovered Meet peer connection, opening channels');
     openChannel(pc, 'captions');
     openChannel(pc, 'meet_messages');
     // Note: 'collections' channel is created by Meet itself as incoming — don't open manually
@@ -442,7 +465,7 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
     if (!(RTC_CHANNEL_NAMES as readonly string[]).includes(label)) return;
     debug(`RTC: incoming datachannel "${label}"`);
     listenToChannel(channel);
-    onMeetConnectionFound(pc);
+    ensureChannels(pc);
   }
 
   function patchCreateDataChannel(OrigProto: RTCPeerConnection): void {
@@ -454,11 +477,6 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
       if ((RTC_CHANNEL_NAMES as readonly string[]).includes(label)) {
         debug(`RTC: createDataChannel("${label}")`);
         listenToChannel(channel);
-        const pc = this;
-        channel.addEventListener('close', () => {
-          debug(`RTC: ${label} channel closed, recreating`);
-          openChannel(pc, label);
-        });
       }
       return channel;
     };
@@ -479,8 +497,13 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
         handleIncomingChannel(connection, event.channel);
       });
       const tryOpenChannels = () => {
-        if (connection.connectionState === 'connected' || connection.iceConnectionState === 'connected') {
-          onMeetConnectionFound(connection);
+        const state = connection.connectionState ?? connection.iceConnectionState;
+        if (state === 'connected') {
+          // ensureChannels is safe to call repeatedly — it skips healthy channels
+          log('RTC: peer connection ready, ensuring channels');
+          ensureChannels(connection);
+        } else if (state === 'failed' || state === 'closed') {
+          debug('RTC: peer connection', state);
         }
       };
       connection.addEventListener('connectionstatechange', tryOpenChannels);
