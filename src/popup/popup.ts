@@ -68,7 +68,8 @@ import { MSG, type Meeting, type TranscriptEntry } from '../utils/types';
 
     const date = new Date(m.startTime).toLocaleDateString();
     const time = new Date(m.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const participants = [...new Set(Object.values(m.participants || {}))];
+    const participants = [...new Set(Object.values(m.participants || {}))]
+      .filter(p => p !== m.meetingCode && !p.startsWith('@'));
 
     let durationStr: string;
     if (isLive) {

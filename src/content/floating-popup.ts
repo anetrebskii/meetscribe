@@ -495,6 +495,11 @@ import { LANGUAGE_CODES } from '../utils/constants';
 
   // --- Rendering ---
 
+  function countParticipants(m: Meeting | Omit<Meeting, 'entries'>): number {
+    const names = Object.values(m.participants || {});
+    return new Set(names.filter(p => p !== m.meetingCode && !p.startsWith('@'))).size;
+  }
+
   function escapeHtml(str: string): string {
     const div = document.createElement('div');
     div.textContent = str;
@@ -603,7 +608,8 @@ import { LANGUAGE_CODES } from '../utils/constants';
 
     const date = new Date(m.startTime).toLocaleDateString();
     const time = new Date(m.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const participants = [...new Set(Object.values(m.participants || {}))];
+    const participants = [...new Set(Object.values(m.participants || {}))]
+      .filter(p => p !== m.meetingCode && !p.startsWith('@'));
 
     let durationStr: string;
     if (isCurrent) {
@@ -839,7 +845,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
             currentMeeting = message.meeting;
             entries = message.entries ?? [];
             if (currentMeeting) {
-              participantCount = new Set(Object.values(currentMeeting.participants || {})).size;
+              participantCount = countParticipants(currentMeeting);
               if (currentView === 'live') {
                 popupTitle.textContent = currentMeeting.title;
               }
@@ -890,7 +896,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
             if (currentMeeting) {
               if (!currentMeeting.participants) currentMeeting.participants = {};
               currentMeeting.participants[message.deviceId] = message.deviceName;
-              participantCount = new Set(Object.values(currentMeeting.participants)).size;
+              participantCount = countParticipants(currentMeeting);
               updateFooter();
             }
             break;
