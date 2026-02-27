@@ -91,6 +91,7 @@ import { MSG, type Meeting, type TranscriptEntry } from '../utils/types';
         <span class="meeting-item-title">${escapeHtml(m.title)}</span>
         <div class="meeting-item-actions">
           <button class="meeting-action" data-action="rename" title="Rename">\u270E</button>
+          <button class="meeting-action" data-action="copy" title="Copy as Markdown">\u2398</button>
           <button class="meeting-action" data-action="export" title="Export">\u2193</button>
           <button class="meeting-action" data-action="delete" title="Delete">\u2715</button>
         </div>
@@ -118,6 +119,34 @@ import { MSG, type Meeting, type TranscriptEntry } from '../utils/types';
         const sel = window.getSelection();
         sel?.removeAllRanges();
         sel?.addRange(range);
+      }
+
+      if (action === 'copy') {
+        chrome.runtime.sendMessage({
+          type: MSG.EXPORT_MEETING,
+          payload: { id: m.id, format: 'md' },
+        }).then(async (response) => {
+          if (response?.content) {
+            try {
+              await navigator.clipboard.writeText(response.content);
+            } catch {
+              const ta = document.createElement('textarea');
+              ta.value = response.content;
+              ta.style.cssText = 'position:fixed;left:-9999px';
+              document.body.appendChild(ta);
+              ta.select();
+              document.execCommand('copy');
+              document.body.removeChild(ta);
+            }
+            const orig = btn.textContent;
+            btn.textContent = '\u2713';
+            btn.title = 'Copied!';
+            setTimeout(() => {
+              btn.textContent = orig;
+              btn.title = 'Copy as Markdown';
+            }, 1500);
+          }
+        }).catch(() => {});
       }
 
       if (action === 'export') {
@@ -161,6 +190,7 @@ import { MSG, type Meeting, type TranscriptEntry } from '../utils/types';
           ev.stopPropagation();
           actionsEl.innerHTML = `
             <button class="meeting-action" data-action="rename" title="Rename">\u270E</button>
+            <button class="meeting-action" data-action="copy" title="Copy as Markdown">\u2398</button>
             <button class="meeting-action" data-action="export" title="Export">\u2193</button>
             <button class="meeting-action" data-action="delete" title="Delete">\u2715</button>
           `;

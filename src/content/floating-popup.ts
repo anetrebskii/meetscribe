@@ -63,6 +63,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
     <div class="body" id="body">
       <div class="toolbar" id="toolbar">
         <select class="lang-select" id="lang-select"></select>
+        <button class="btn-small" id="btn-copy" title="Copy as Markdown">Copy</button>
         <button class="btn-small" id="btn-export" title="Export transcript">Export</button>
       </div>
       <div class="back-nav" id="back-nav">
@@ -95,6 +96,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
   const btnMinimize = shadow.getElementById('btn-minimize')!;
   const btnClose = shadow.getElementById('btn-close')!;
   const btnMeetings = shadow.getElementById('btn-meetings')!;
+  const btnCopy = shadow.getElementById('btn-copy')!;
   const btnExport = shadow.getElementById('btn-export')!;
   const resizeHandle = shadow.getElementById('resize-handle')!;
   const toolbarEl = shadow.getElementById('toolbar')!;
@@ -328,6 +330,41 @@ import { LANGUAGE_CODES } from '../utils/constants';
     } else {
       switchView('meetings');
     }
+  });
+
+  async function copyToClipboard(text: string, feedbackEl: HTMLElement): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Fallback for contexts where clipboard API is blocked
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;left:-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    const orig = feedbackEl.textContent;
+    feedbackEl.textContent = '\u2713';
+    feedbackEl.title = 'Copied!';
+    setTimeout(() => {
+      feedbackEl.textContent = orig;
+      feedbackEl.title = 'Copy as Markdown';
+    }, 1500);
+  }
+
+  btnCopy.addEventListener('click', async () => {
+    try {
+      const title = currentMeeting?.title ?? 'Meeting Transcript';
+      const response = await chrome.runtime.sendMessage({
+        type: MSG.EXPORT_TRANSCRIPT,
+        payload: { format: 'md', title },
+      });
+      if (response?.content) {
+        await copyToClipboard(response.content, btnCopy);
+      }
+    } catch { /* silent */ }
   });
 
   btnExport.addEventListener('click', async () => {
@@ -585,6 +622,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
 
         <div class="meeting-item-actions">
           <button class="meeting-action" data-action="rename" title="Rename">\u270E</button>
+          <button class="meeting-action" data-action="copy" title="Copy as Markdown">\u2398</button>
           <button class="meeting-action" data-action="export" title="Export">\u2193</button>
           <button class="meeting-action" data-action="delete" title="Delete">\u2715</button>
         </div>
@@ -613,6 +651,17 @@ import { LANGUAGE_CODES } from '../utils/constants';
         sel?.removeAllRanges();
         sel?.addRange(range);
         showAutocomplete(titleEl);
+      }
+
+      if (action === 'copy') {
+        chrome.runtime.sendMessage({
+          type: MSG.EXPORT_MEETING,
+          payload: { id: m.id, format: 'md' },
+        }).then(async (response) => {
+          if (response?.content) {
+            await copyToClipboard(response.content, btn);
+          }
+        }).catch(() => {});
       }
 
       if (action === 'export') {
@@ -664,6 +713,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
           // Restore original action buttons
           actionsEl.innerHTML = `
             <button class="meeting-action" data-action="rename" title="Rename">\u270E</button>
+            <button class="meeting-action" data-action="copy" title="Copy as Markdown">\u2398</button>
             <button class="meeting-action" data-action="export" title="Export">\u2193</button>
             <button class="meeting-action" data-action="delete" title="Delete">\u2715</button>
           `;
