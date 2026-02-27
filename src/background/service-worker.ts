@@ -217,38 +217,42 @@ async function handleMessage(
       const nameMsg = message as unknown as { speakerName: string };
       if (!nameMsg.speakerName) break;
 
-      // Find the most recent device ID that doesn't have a name yet
+      // Find unnamed devices active within the last 10 seconds
       const now = Date.now();
+      const unnamedDevices: Array<{ deviceId: string; timestamp: number }> = [];
       for (const entry of recentActiveDevices) {
-        if (now - entry.timestamp > 10000) break; // only within last 10 seconds
+        if (now - entry.timestamp > 10000) break;
         if (!deviceMap.has(entry.deviceId) || deviceMap.get(entry.deviceId) === entry.deviceId) {
-          // This device doesn't have a real name — assign it
-          const deviceId = entry.deviceId;
-          const deviceName = nameMsg.speakerName;
-          deviceMap.set(deviceId, deviceName);
-
-          // Retroactively fix entries
-          const updatedEntries = renameSpeaker(deviceId, deviceName);
-          for (const updated of updatedEntries) {
-            const meetingId = getCurrentMeetingId();
-            if (meetingId) {
-              updateEntryText(meetingId, updated.id, updated.text);
-              updateEntrySpeaker(meetingId, updated.id, deviceName);
-            }
-            broadcastToPopup({ type: 'entry_updated', entry: updated });
-          }
-
-          const meetingId = getCurrentMeetingId();
-          if (meetingId) {
-            addParticipant(meetingId, deviceId, deviceName);
-            broadcastToPopup({
-              type: 'participant_update',
-              deviceId,
-              deviceName,
-            });
-          }
-          break;
+          unnamedDevices.push(entry);
         }
+      }
+
+      // Only assign if exactly one unnamed device — avoids mismatching
+      if (unnamedDevices.length !== 1) break;
+
+      const deviceId = unnamedDevices[0].deviceId;
+      const deviceName = nameMsg.speakerName;
+      deviceMap.set(deviceId, deviceName);
+
+      // Retroactively fix entries
+      const updatedEntries = renameSpeaker(deviceId, deviceName);
+      for (const updated of updatedEntries) {
+        const meetingId = getCurrentMeetingId();
+        if (meetingId) {
+          updateEntryText(meetingId, updated.id, updated.text);
+          updateEntrySpeaker(meetingId, updated.id, deviceName);
+        }
+        broadcastToPopup({ type: 'entry_updated', entry: updated });
+      }
+
+      const meetingId = getCurrentMeetingId();
+      if (meetingId) {
+        addParticipant(meetingId, deviceId, deviceName);
+        broadcastToPopup({
+          type: 'participant_update',
+          deviceId,
+          deviceName,
+        });
       }
       break;
     }

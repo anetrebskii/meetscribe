@@ -39,6 +39,15 @@
 
   const knownParticipants = new Set<string>();
 
+  // Filter out duration strings, timestamps, and other non-name text from DOM
+  const NON_NAME_RE = /^\d+\s*(min|sec|hr|hour|:\d)/i;
+
+  function isValidName(name: string | null | undefined): name is string {
+    if (!name) return false;
+    const trimmed = name.trim();
+    return trimmed.length >= 2 && trimmed.length <= 60 && !NON_NAME_RE.test(trimmed);
+  }
+
   function scanParticipantNames(): void {
     const names: string[] = [];
 
@@ -56,7 +65,7 @@
     );
     for (const el of nameOverlays) {
       const name = el.textContent?.trim();
-      if (name && name.length >= 2 && name.length <= 60) {
+      if (isValidName(name)) {
         names.push(name);
       }
     }
@@ -67,7 +76,7 @@
     );
     for (const el of peopleItems) {
       const name = el.textContent?.trim();
-      if (name && name.length >= 2 && name.length <= 60) {
+      if (isValidName(name)) {
         names.push(name);
       }
     }
