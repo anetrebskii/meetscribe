@@ -160,6 +160,11 @@ function ensureMeeting(meetingCode?: string): string {
   const existingId = getCurrentMeetingId();
   if (existingId) return existingId;
 
+  // Clear stale state from previous meeting
+  clearEntries();
+  deviceMap.clear();
+  recentActiveDevices.length = 0;
+
   const code = meetingCode ?? currentMeetingCode ?? 'unknown';
   const meeting = createMeeting(code);
   currentMeetingCode = code;

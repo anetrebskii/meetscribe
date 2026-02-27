@@ -131,6 +131,19 @@ function looksLikeDeviceId(s: string): boolean {
   return s.includes('/devices/') || s.includes('spaces/');
 }
 
+/**
+ * Heuristic: a string looks like a real display name (not a protocol artifact).
+ * Rejects short all-caps tokens like "FID", numeric strings, paths, etc.
+ */
+function looksLikeDisplayName(s: string): boolean {
+  if (s.length < 2 || s.length > 80) return false;
+  if (/^[0-9]+$/.test(s)) return false;
+  if (s.includes('/')) return false;
+  // Reject short all-uppercase tokens (protocol labels like "FID", "SID", "GID")
+  if (s.length <= 4 && /^[A-Z]+$/.test(s)) return false;
+  return true;
+}
+
 function walkForDeviceInfo(fields: ProtoField[], depth: number): RtcDeviceInfo | null {
   if (depth > 10) return null;
 
@@ -138,7 +151,7 @@ function walkForDeviceInfo(fields: ProtoField[], depth: number): RtcDeviceInfo |
   const f2str = getString(fields, 2);
 
   // Match: field 1 = device path, field 2 = display name
-  if (f1str && f2str && looksLikeDeviceId(f1str) && !looksLikeDeviceId(f2str)) {
+  if (f1str && f2str && looksLikeDeviceId(f1str) && !looksLikeDeviceId(f2str) && looksLikeDisplayName(f2str)) {
     return { deviceId: `@${f1str}`, deviceName: f2str };
   }
 
@@ -170,7 +183,7 @@ export function parseDeviceCollection(data: Uint8Array): RtcDeviceInfo[] {
       for (let i = 0; i < allStrings.length - 1; i++) {
         const a = allStrings[i].value;
         const b = allStrings[i + 1].value;
-        if (looksLikeDeviceId(a) && !looksLikeDeviceId(b) && b.length >= 2 && b.length <= 80 && !/^[0-9]+$/.test(b)) {
+        if (looksLikeDeviceId(a) && !looksLikeDeviceId(b) && looksLikeDisplayName(b)) {
           devices.push({ deviceId: `@${a}`, deviceName: b });
           console.debug(LOG_PREFIX, 'RTC: fallback device match:', a, '→', b);
           i++; // skip the name we just consumed
@@ -192,7 +205,7 @@ function collectDevices(fields: ProtoField[], result: RtcDeviceInfo[], depth: nu
   const f2str = getString(fields, 2);
 
   // Match: field 1 = device path, field 2 = display name
-  if (f1str && f2str && looksLikeDeviceId(f1str) && !looksLikeDeviceId(f2str)) {
+  if (f1str && f2str && looksLikeDeviceId(f1str) && !looksLikeDeviceId(f2str) && looksLikeDisplayName(f2str)) {
     result.push({ deviceId: `@${f1str}`, deviceName: f2str });
     return; // Don't recurse further into this device node
   }
