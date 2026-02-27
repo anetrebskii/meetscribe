@@ -1,5 +1,5 @@
 import type { Meeting, TranscriptEntry } from './types';
-import { STORAGE_DEBOUNCE_MS } from './constants';
+import { STORAGE_DEBOUNCE_MS, MEETING_RESUME_WINDOW_MS } from './constants';
 
 const STORAGE_KEY = 'meetings';
 
@@ -56,7 +56,7 @@ export function addParticipant(meetingId: string, deviceId: string, name: string
   const meeting = meetings.get(meetingId);
   if (!meeting) return;
   meeting.participants[deviceId] = name;
-  meeting.description = Object.values(meeting.participants).join(', ');
+  meeting.description = [...new Set(Object.values(meeting.participants))].join(', ');
   schedulePersist();
 }
 
@@ -109,6 +109,29 @@ export function renameMeeting(id: string, title: string): Meeting | null {
   const meeting = meetings.get(id);
   if (!meeting) return null;
   meeting.title = title;
+  schedulePersist();
+  return meeting;
+}
+
+export function findRecentMeeting(meetingCode: string): Meeting | null {
+  const now = Date.now();
+  for (const meeting of meetings.values()) {
+    if (meeting.meetingCode !== meetingCode) continue;
+    const gap = meeting.endTime !== null
+      ? now - meeting.endTime
+      : now - meeting.startTime;
+    if (gap <= MEETING_RESUME_WINDOW_MS) {
+      return meeting;
+    }
+  }
+  return null;
+}
+
+export function resumeMeeting(id: string): Meeting | null {
+  const meeting = meetings.get(id);
+  if (!meeting) return null;
+  meeting.endTime = null;
+  currentMeetingId = id;
   schedulePersist();
   return meeting;
 }

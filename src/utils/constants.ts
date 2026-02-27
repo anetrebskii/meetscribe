@@ -1,5 +1,6 @@
 export const KEEPALIVE_INTERVAL_MS = 20_000;
 export const STORAGE_DEBOUNCE_MS = 2_000;
+export const MEETING_RESUME_WINDOW_MS = 10 * 60_000; // 10 minutes
 
 export const MESSAGE_SOURCE = 'meetscribe';
 

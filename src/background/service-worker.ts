@@ -9,6 +9,7 @@ import {
   updateOrAddEntry,
   getEntries,
   clearEntries,
+  restoreEntries,
   getSettings,
   updateSettings,
   restoreFromStorage,
@@ -34,6 +35,8 @@ import {
   deleteMeeting,
   restoreMeetings,
   setCurrentMeetingId,
+  findRecentMeeting,
+  resumeMeeting,
 } from '../utils/meeting-store';
 
 // --- State ---
@@ -49,7 +52,42 @@ const recentActiveDevices: Array<{ deviceId: string; timestamp: number }> = [];
 restoreFromStorage();
 restoreMeetings();
 
-// --- Toolbar icon click → toggle popup ---
+// --- Extension icon state ---
+
+function updateExtensionIcon(isRecording: boolean): void {
+  chrome.action.setTitle({
+    title: isRecording ? 'MeetScribe - Recording' : 'MeetScribe',
+  });
+}
+
+// --- Dynamic popup routing ---
+
+function isMeetTab(url?: string): boolean {
+  return !!url && url.includes('meet.google.com');
+}
+
+async function updatePopupForTab(tabId: number, url?: string): Promise<void> {
+  if (isMeetTab(url)) {
+    await chrome.action.setPopup({ tabId, popup: '' });
+  } else {
+    await chrome.action.setPopup({ tabId, popup: 'popup.html' });
+  }
+}
+
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  try {
+    const tab = await chrome.tabs.get(activeInfo.tabId);
+    await updatePopupForTab(activeInfo.tabId, tab.url);
+  } catch { /* tab may not exist */ }
+});
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.url || changeInfo.status === 'complete') {
+    await updatePopupForTab(tabId, tab.url);
+  }
+});
+
+// --- Toolbar icon click → toggle popup (only fires when popup is '' i.e. Meet tabs) ---
 
 chrome.action.onClicked.addListener(async (tab) => {
   if (tab.id && tab.url?.includes('meet.google.com')) {
@@ -70,8 +108,10 @@ chrome.runtime.onConnect.addListener((port) => {
         const meetingId = getCurrentMeetingId();
         if (meetingId) {
           endMeeting(meetingId);
+          broadcastToPopup({ type: 'meeting_ended', meetingId });
         }
         currentMeetingCode = null;
+        updateExtensionIcon(false);
       }
     });
   } else if (port.name === POPUP_PORT_NAME) {
@@ -108,8 +148,25 @@ function ensureMeeting(meetingCode?: string): string {
   if (existingId) return existingId;
 
   const code = meetingCode ?? currentMeetingCode ?? 'unknown';
+
+  // Resume if same meeting code ended within the last 10 minutes
+  const recentMeeting = findRecentMeeting(code);
+  if (recentMeeting) {
+    const resumed = resumeMeeting(recentMeeting.id)!;
+    currentMeetingCode = code;
+    restoreEntries(resumed.entries);
+    // Restore deviceMap from meeting participants
+    for (const [deviceId, name] of Object.entries(resumed.participants)) {
+      deviceMap.set(deviceId, name);
+    }
+    updateExtensionIcon(true);
+    broadcastToPopup({ type: 'meeting_started', meeting: resumed });
+    return resumed.id;
+  }
+
   const meeting = createMeeting(code);
   currentMeetingCode = code;
+  updateExtensionIcon(true);
   broadcastToPopup({ type: 'meeting_started', meeting });
   return meeting.id;
 }
@@ -134,6 +191,8 @@ async function handleMessage(
     case MSG.MEETING_CODE: {
       const msg = message as unknown as { meetingCode: string };
       currentMeetingCode = msg.meetingCode;
+      // Create meeting immediately so it appears in the list before anyone speaks
+      ensureMeeting(msg.meetingCode);
       break;
     }
 
@@ -339,7 +398,7 @@ async function handleMessage(
     }
 
     case MSG.GET_MEETINGS: {
-      sendResponse({ meetings: getMeetings() });
+      sendResponse({ meetings: getMeetings(), currentMeetingId: getCurrentMeetingId() });
       return;
     }
 

@@ -2,8 +2,6 @@ import type { TranscriptEntry, Settings } from './types';
 import { DEFAULT_SETTINGS, KEEPALIVE_PORT_NAME } from './types';
 import { STORAGE_DEBOUNCE_MS } from './constants';
 
-const MERGE_WINDOW_MS = 60_000; // merge same-speaker entries within 1 minute
-
 let entries: TranscriptEntry[] = [];
 let settings: Settings = { ...DEFAULT_SETTINGS };
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -12,20 +10,8 @@ let idCounter = 0;
 // Progressive dedup: track messageId → { entryId, version }
 const messageVersionMap = new Map<string, { entryId: string; version: number }>();
 
-// Merge tracking: entryId → ordered text parts, messageId → part index in its entry
-const entryParts = new Map<string, string[]>();
-const messageIdToPartIndex = new Map<string, { entryId: string; index: number }>();
-// Track last activity time per entry for merge window
-const entryLastActivity = new Map<string, number>();
-
 function generateId(): string {
   return `${Date.now()}-${++idCounter}`;
-}
-
-function rebuildEntryText(entryId: string): string {
-  const parts = entryParts.get(entryId);
-  if (!parts) return '';
-  return parts.join(' ');
 }
 
 /**
@@ -57,50 +43,12 @@ export function updateOrAddEntry(
 
       existing.version = version;
 
-      // Update the part in its entry
-      const partInfo = messageIdToPartIndex.get(messageId);
-      if (partInfo) {
-        const parts = entryParts.get(partInfo.entryId);
-        if (parts) {
-          parts[partInfo.index] = text.trim();
-        }
-      }
-
       const entry = entries.find(e => e.id === existing.entryId);
       if (entry) {
-        entry.text = rebuildEntryText(existing.entryId);
-        entryLastActivity.set(existing.entryId, Date.now());
+        entry.text = text.trim();
         schedulePersist();
         return { entry, isUpdate: true };
       }
-    }
-
-    // --- New messageId: try to merge with last entry ---
-    const lastEntry = entries.length > 0 ? entries[entries.length - 1] : null;
-    const lastActivity = lastEntry ? (entryLastActivity.get(lastEntry.id) ?? lastEntry.timestamp) : 0;
-
-    if (
-      lastEntry &&
-      lastEntry.speaker === speaker &&
-      (Date.now() - lastActivity) < MERGE_WINDOW_MS
-    ) {
-      // Merge into last entry
-      let parts = entryParts.get(lastEntry.id);
-      if (!parts) {
-        // First merge for this entry — seed with its current text
-        parts = [lastEntry.text];
-        entryParts.set(lastEntry.id, parts);
-      }
-      const index = parts.length;
-      parts.push(text.trim());
-
-      messageVersionMap.set(messageId, { entryId: lastEntry.id, version: messageVersion ?? 0 });
-      messageIdToPartIndex.set(messageId, { entryId: lastEntry.id, index });
-      entryLastActivity.set(lastEntry.id, Date.now());
-
-      lastEntry.text = rebuildEntryText(lastEntry.id);
-      schedulePersist();
-      return { entry: lastEntry, isUpdate: true };
     }
 
     // --- New entry ---
@@ -112,10 +60,7 @@ export function updateOrAddEntry(
       messageId,
     };
     entries.push(entry);
-    entryParts.set(entry.id, [text.trim()]);
     messageVersionMap.set(messageId, { entryId: entry.id, version: messageVersion ?? 0 });
-    messageIdToPartIndex.set(messageId, { entryId: entry.id, index: 0 });
-    entryLastActivity.set(entry.id, Date.now());
     schedulePersist();
     return { entry, isUpdate: false };
   }
@@ -160,13 +105,21 @@ export function getEntries(): TranscriptEntry[] {
   return [...entries];
 }
 
+export function restoreEntries(stored: TranscriptEntry[]): void {
+  entries = [...stored];
+  idCounter = entries.length;
+  messageVersionMap.clear();
+  for (const entry of entries) {
+    if (entry.messageId) {
+      messageVersionMap.set(entry.messageId, { entryId: entry.id, version: 0 });
+    }
+  }
+}
+
 export function clearEntries(): void {
   entries = [];
   idCounter = 0;
   messageVersionMap.clear();
-  entryParts.clear();
-  messageIdToPartIndex.clear();
-  entryLastActivity.clear();
   persistNow();
 }
 

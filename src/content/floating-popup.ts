@@ -48,7 +48,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
   container.innerHTML = `
     <div class="header" id="header">
       <div class="drag-handle" id="drag-handle">
-        <span class="title" id="popup-title">Transcription</span>
+        <span class="title"><span class="title-prefix">MeetScribe</span> <span class="title-sep">–</span> <span class="title-page" id="popup-title">Live</span></span>
       </div>
       <div class="header-actions">
         <button class="btn-icon" id="btn-meetings" title="Meetings">
@@ -64,6 +64,9 @@ import { LANGUAGE_CODES } from '../utils/constants';
       <div class="toolbar" id="toolbar">
         <select class="lang-select" id="lang-select"></select>
         <button class="btn-small" id="btn-export" title="Export transcript">Export</button>
+      </div>
+      <div class="back-nav" id="back-nav">
+        <button class="btn-back-live" id="btn-back-live">&larr; Meetings</button>
       </div>
       <div class="content-area" id="content-area">
         <div class="transcript" id="transcript"></div>
@@ -96,6 +99,12 @@ import { LANGUAGE_CODES } from '../utils/constants';
   const resizeHandle = shadow.getElementById('resize-handle')!;
   const toolbarEl = shadow.getElementById('toolbar')!;
   const footerEl = shadow.getElementById('footer')!;
+  const backNav = shadow.getElementById('back-nav')!;
+  const btnBackLive = shadow.getElementById('btn-back-live')!;
+
+  btnBackLive.addEventListener('click', () => {
+    switchView('meetings');
+  });
 
   // --- Language selector: build with recent languages at top ---
 
@@ -194,7 +203,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
       popupTitle.blur();
     }
     if (e.key === 'Escape') {
-      popupTitle.textContent = currentMeeting?.title ?? 'Transcription';
+      popupTitle.textContent = currentMeeting?.title ?? 'Live';
       popupTitle.blur();
     }
   });
@@ -260,12 +269,13 @@ import { LANGUAGE_CODES } from '../utils/constants';
     meetingsEl.style.display = view === 'meetings' ? '' : 'none';
     detailEl.style.display = view === 'meeting-detail' ? '' : 'none';
     toolbarEl.style.display = view === 'live' ? '' : 'none';
+    backNav.style.display = (view === 'live' || view === 'meeting-detail') ? '' : 'none';
 
     btnMeetings.classList.toggle('active', view === 'meetings' || view === 'meeting-detail');
 
     switch (view) {
       case 'live':
-        popupTitle.textContent = currentMeeting ? currentMeeting.title : 'Transcription';
+        popupTitle.textContent = currentMeeting ? currentMeeting.title : 'Live';
         updateFooter();
         break;
       case 'meetings':
@@ -462,31 +472,36 @@ import { LANGUAGE_CODES } from '../utils/constants';
 
     const date = new Date(m.startTime).toLocaleDateString();
     const time = new Date(m.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const pCount = Object.keys(m.participants || {}).length;
+    const participants = [...new Set(Object.values(m.participants || {}))];
 
     let durationStr: string;
     if (m.endTime) {
       const dur = Math.round((m.endTime - m.startTime) / 60000);
       durationStr = `${dur} min`;
-    } else if (isCurrent) {
-      const dur = Math.round((Date.now() - m.startTime) / 60000);
-      durationStr = `${dur} min (live)`;
     } else {
-      durationStr = 'unknown';
+      const dur = Math.round((Date.now() - m.startTime) / 60000);
+      durationStr = isCurrent ? `${dur} min (live)` : `${dur} min`;
     }
+
+    const showCode = m.meetingCode && m.meetingCode !== 'unknown' && m.meetingCode !== m.title;
+    const codeTag = showCode ? `<span class="participant-tag">${escapeHtml(m.meetingCode)}</span>` : '';
+    const participantTags = participants.map(p => `<span class="participant-tag">${escapeHtml(p)}</span>`).join('');
+    const tagsHtml = (codeTag || participantTags)
+      ? `<div class="meeting-item-participants">${codeTag}${participantTags}</div>`
+      : '';
 
     item.innerHTML = `
       <div class="meeting-item-header">
         <span class="meeting-item-title">${escapeHtml(m.title)}</span>
-        ${isCurrent ? '<span class="live-badge">LIVE</span>' : ''}
+
+        <div class="meeting-item-actions">
+          <button class="meeting-action" data-action="rename" title="Rename">\u270E</button>
+          <button class="meeting-action" data-action="export" title="Export">\u2193</button>
+          <button class="meeting-action" data-action="delete" title="Delete">\u2715</button>
+        </div>
       </div>
-      <div class="meeting-item-actions">
-        <button class="meeting-action" data-action="rename" title="Rename">\u270E</button>
-        <button class="meeting-action" data-action="export" title="Export">\u2193</button>
-        <button class="meeting-action" data-action="delete" title="Delete">\u2715</button>
-      </div>
-      <div class="meeting-item-meta">${date} ${time} \u00b7 ${durationStr} \u00b7 ${pCount} participant${pCount !== 1 ? 's' : ''}</div>
-      ${m.description ? `<div class="meeting-item-desc">${escapeHtml(m.description)}</div>` : ''}
+      <div class="meeting-item-meta">${date} ${time} \u00b7 ${durationStr}</div>
+      ${tagsHtml}
     `;
 
     const titleEl = item.querySelector('.meeting-item-title') as HTMLElement;
@@ -568,7 +583,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
     // Click to view transcription
     item.addEventListener('click', (e) => {
       // Don't navigate if clicking on rename input or action buttons
-      if ((e.target as HTMLElement).contentEditable === 'true') return;
+      if ((e.target as HTMLElement).getAttribute('contenteditable') === 'true') return;
       if ((e.target as HTMLElement).closest('.meeting-item-actions')) return;
 
       if (isCurrent) {
@@ -593,6 +608,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
       titleEl.contentEditable = 'false';
       const newTitle = titleEl.textContent?.trim();
       if (newTitle && newTitle !== m.title) {
+        m.title = newTitle;
         chrome.runtime.sendMessage({
           type: MSG.RENAME_MEETING,
           payload: { id: m.id, title: newTitle },
@@ -636,13 +652,6 @@ import { LANGUAGE_CODES } from '../utils/constants';
         return;
       }
 
-      // Back button
-      const backBtn = document.createElement('button');
-      backBtn.className = 'btn-back';
-      backBtn.innerHTML = '&larr; Back to meetings';
-      backBtn.addEventListener('click', () => switchView('meetings'));
-      detailEl.appendChild(backBtn);
-
       // Entries
       const entriesContainer = document.createElement('div');
       entriesContainer.className = 'detail-entries';
@@ -671,7 +680,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
             currentMeeting = message.meeting;
             entries = message.entries ?? [];
             if (currentMeeting) {
-              participantCount = Object.keys(currentMeeting.participants || {}).length;
+              participantCount = new Set(Object.values(currentMeeting.participants || {})).size;
               if (currentView === 'live') {
                 popupTitle.textContent = currentMeeting.title;
               }
@@ -702,7 +711,19 @@ import { LANGUAGE_CODES } from '../utils/constants';
             currentMeeting = message.meeting;
             participantCount = 0;
             if (currentView === 'live') {
-              popupTitle.textContent = currentMeeting?.title ?? 'Transcription';
+              popupTitle.textContent = currentMeeting?.title ?? 'Live';
+            }
+            break;
+
+          case 'meeting_ended':
+            currentMeeting = null;
+            participantCount = 0;
+            if (currentView === 'live') {
+              popupTitle.textContent = 'Live';
+              updateFooter();
+            }
+            if (currentView === 'meetings') {
+              loadMeetingsList();
             }
             break;
 
@@ -710,7 +731,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
             if (currentMeeting) {
               if (!currentMeeting.participants) currentMeeting.participants = {};
               currentMeeting.participants[message.deviceId] = message.deviceName;
-              participantCount = Object.keys(currentMeeting.participants).length;
+              participantCount = new Set(Object.values(currentMeeting.participants)).size;
               updateFooter();
             }
             break;
@@ -863,7 +884,19 @@ import { LANGUAGE_CODES } from '../utils/constants';
         margin: -1px -3px;
       }
 
-      .title[contenteditable="true"] {
+      .title-prefix {
+        opacity: 0.5;
+      }
+      .title-sep {
+        opacity: 0.3;
+      }
+      .title-page {
+        outline: none;
+        border-radius: 3px;
+        padding: 1px 3px;
+        margin: -1px -3px;
+      }
+      .title-page[contenteditable="true"] {
         background: rgba(255, 255, 255, 0.08);
         outline: 1px solid #8ab4f8;
         white-space: normal;
@@ -1118,21 +1151,51 @@ import { LANGUAGE_CODES } from '../utils/constants';
         margin-top: 4px;
       }
 
-      .meeting-item-desc {
-        font-size: 12px;
-        color: #80868b;
-        margin-top: 3px;
+      .back-nav {
+        padding: 4px 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        flex-shrink: 0;
+      }
+
+      .btn-back-live {
+        background: none;
+        border: none;
+        color: #9aa0a6;
+        font-size: 11px;
+        cursor: pointer;
+        padding: 2px 0;
+        opacity: 0.7;
+        transition: opacity 0.15s, color 0.15s;
+      }
+
+      .btn-back-live:hover {
+        opacity: 1;
+        color: #8ab4f8;
+      }
+
+      .meeting-item-participants {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 4px;
+      }
+
+      .participant-tag {
+        background: rgba(138, 180, 248, 0.12);
+        color: #8ab4f8;
+        font-size: 10px;
+        padding: 1px 6px;
+        border-radius: 8px;
         white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
       }
 
       .meeting-item-actions {
         display: flex;
         gap: 4px;
-        margin-top: 4px;
+        margin-left: auto;
         opacity: 0;
         transition: opacity 0.15s;
+        flex-shrink: 0;
       }
 
       .meeting-item:hover .meeting-item-actions {
