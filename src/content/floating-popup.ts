@@ -601,12 +601,14 @@ import { LANGUAGE_CODES } from '../utils/constants';
     const participants = [...new Set(Object.values(m.participants || {}))];
 
     let durationStr: string;
-    if (m.endTime) {
+    if (isCurrent) {
+      const dur = Math.round((Date.now() - m.startTime) / 60000);
+      durationStr = `${dur} min (live)`;
+    } else if (m.endTime) {
       const dur = Math.round((m.endTime - m.startTime) / 60000);
       durationStr = `${dur} min`;
     } else {
-      const dur = Math.round((Date.now() - m.startTime) / 60000);
-      durationStr = isCurrent ? `${dur} min (live)` : `${dur} min`;
+      durationStr = '';
     }
 
     const showCode = m.meetingCode && m.meetingCode !== 'unknown' && m.meetingCode !== m.title;
@@ -627,7 +629,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
           <button class="meeting-action" data-action="delete" title="Delete">\u2715</button>
         </div>
       </div>
-      <div class="meeting-item-meta">${date} ${time} \u00b7 ${durationStr}</div>
+      <div class="meeting-item-meta">${date} ${time}${durationStr ? ` \u00b7 ${durationStr}` : ''}</div>
       ${tagsHtml}
     `;
 
