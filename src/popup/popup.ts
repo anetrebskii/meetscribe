@@ -163,7 +163,7 @@ import { MSG, type Meeting, type TranscriptEntry } from '../utils/types';
             a.href = url;
             const title = (response.title ?? m.title).replace(/[^a-zA-Z0-9 _-]/g, '').trim();
             const d = new Date(response.startTime ?? m.startTime);
-            const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+            const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
             a.download = `${title} ${dateStr}.md`;
             a.click();
             URL.revokeObjectURL(url);

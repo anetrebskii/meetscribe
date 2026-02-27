@@ -9,7 +9,6 @@ import {
   updateOrAddEntry,
   getEntries,
   clearEntries,
-  restoreEntries,
   getSettings,
   updateSettings,
   restoreFromStorage,
@@ -35,8 +34,6 @@ import {
   deleteMeeting,
   restoreMeetings,
   setCurrentMeetingId,
-  findRecentMeeting,
-  resumeMeeting,
   getMeetingTitles,
 } from '../utils/meeting-store';
 
@@ -164,22 +161,6 @@ function ensureMeeting(meetingCode?: string): string {
   if (existingId) return existingId;
 
   const code = meetingCode ?? currentMeetingCode ?? 'unknown';
-
-  // Resume if same meeting code ended within the last 10 minutes
-  const recentMeeting = findRecentMeeting(code);
-  if (recentMeeting) {
-    const resumed = resumeMeeting(recentMeeting.id)!;
-    currentMeetingCode = code;
-    restoreEntries(resumed.entries);
-    // Restore deviceMap from meeting participants
-    for (const [deviceId, name] of Object.entries(resumed.participants)) {
-      deviceMap.set(deviceId, name);
-    }
-    updateExtensionIcon(true);
-    broadcastToPopup({ type: 'meeting_started', meeting: resumed });
-    return resumed.id;
-  }
-
   const meeting = createMeeting(code);
   currentMeetingCode = code;
   updateExtensionIcon(true);
