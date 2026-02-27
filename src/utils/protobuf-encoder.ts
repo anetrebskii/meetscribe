@@ -50,12 +50,12 @@ function concat(...parts: Uint8Array[]): Uint8Array {
 /**
  * Encode the UpdateMediaSession request body as protobuf.
  *
- * Mirrors Tactiq's structure:
+ * Field numbers extracted from Tactiq's protobufjs schema:
  *   UpdateMediaSessionBody {
  *     1: mediaSessionConfig {
  *       1: sessionId  = "mediasessions/<id>"
- *       5: captionPreferences {
- *         1: pair (repeated) {
+ *       3: captionPreferences {
+ *         9: pair (repeated) {
  *           1: lang1 = langCode
  *           2: lang2 = langCode
  *         }
@@ -73,13 +73,13 @@ export function encodeUpdateMediaSession(sessionId: string, langCode: string): U
     encodeString(2, langCode),
   );
 
-  // CaptionPreferences { 1: pair }
-  const captionPreferences = encodeMessage(1, pair);
+  // CaptionPreferences { 9: pair }
+  const captionPreferences = encodeMessage(9, pair);
 
-  // MediaSessionConfig { 1: sessionId, 5: captionPreferences }
+  // MediaSessionConfig { 1: sessionId, 3: captionPreferences }
   const mediaSessionConfig = concat(
     encodeString(1, `mediasessions/${sessionId}`),
-    encodeMessage(5, captionPreferences),
+    encodeMessage(3, captionPreferences),
   );
 
   // ClientConfig { 1: captionConfig }
