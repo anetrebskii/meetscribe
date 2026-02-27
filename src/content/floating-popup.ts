@@ -173,6 +173,86 @@ import { LANGUAGE_CODES } from '../utils/constants';
 
   // --- Live title rename (double-click) ---
 
+  // --- Autocomplete helper ---
+
+  let acList: HTMLElement | null = null;
+  let acItems: string[] = [];
+  let acIndex = -1;
+  let acTarget: HTMLElement | null = null;
+
+  function showAutocomplete(target: HTMLElement): void {
+    removeAutocomplete();
+    acTarget = target;
+    acList = document.createElement('div');
+    acList.className = 'autocomplete-list';
+    // Position below the target
+    const rect = target.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    acList.style.left = `${rect.left - containerRect.left}px`;
+    acList.style.top = `${rect.bottom - containerRect.top + 2}px`;
+    acList.style.minWidth = `${rect.width}px`;
+    container.appendChild(acList);
+
+    chrome.runtime.sendMessage({ type: MSG.GET_MEETING_TITLES }).then((res) => {
+      acItems = (res?.titles ?? []) as string[];
+      filterAutocomplete();
+    }).catch(() => {});
+
+    target.addEventListener('input', onAcInput);
+  }
+
+  function onAcInput(): void { acIndex = -1; filterAutocomplete(); }
+
+  function filterAutocomplete(): void {
+    if (!acList || !acTarget) return;
+    const query = (acTarget.textContent ?? '').trim().toLowerCase();
+    const matches = query
+      ? acItems.filter(t => t.toLowerCase().includes(query) && t.toLowerCase() !== query)
+      : acItems;
+    acList.innerHTML = '';
+    acIndex = -1;
+    for (const title of matches.slice(0, 6)) {
+      const item = document.createElement('div');
+      item.className = 'autocomplete-item';
+      item.textContent = title;
+      item.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // prevent blur
+        if (acTarget) {
+          acTarget.textContent = title;
+          acTarget.blur();
+        }
+      });
+      acList.appendChild(item);
+    }
+  }
+
+  function navigateAutocomplete(dir: number): void {
+    if (!acList) return;
+    const items = acList.querySelectorAll('.autocomplete-item');
+    if (items.length === 0) return;
+    if (acIndex >= 0) items[acIndex].classList.remove('active');
+    acIndex = (acIndex + dir + items.length) % items.length;
+    items[acIndex].classList.add('active');
+  }
+
+  function acceptAutocomplete(): boolean {
+    if (!acList || acIndex < 0) return false;
+    const items = acList.querySelectorAll('.autocomplete-item');
+    if (acIndex < items.length && acTarget) {
+      acTarget.textContent = items[acIndex].textContent;
+      return true;
+    }
+    return false;
+  }
+
+  function removeAutocomplete(): void {
+    if (acList) { acList.remove(); acList = null; }
+    if (acTarget) { acTarget.removeEventListener('input', onAcInput); }
+    acTarget = null;
+    acItems = [];
+    acIndex = -1;
+  }
+
   popupTitle.addEventListener('dblclick', (e) => {
     if (currentView !== 'live' || !currentMeeting) return;
     e.stopPropagation();
@@ -183,10 +263,12 @@ import { LANGUAGE_CODES } from '../utils/constants';
     const sel = window.getSelection();
     sel?.removeAllRanges();
     sel?.addRange(range);
+    showAutocomplete(popupTitle);
   });
   popupTitle.addEventListener('blur', () => {
     if (popupTitle.contentEditable !== 'true') return;
     popupTitle.contentEditable = 'false';
+    removeAutocomplete();
     const newTitle = popupTitle.textContent?.trim();
     if (newTitle && currentMeeting && newTitle !== currentMeeting.title) {
       currentMeeting.title = newTitle;
@@ -198,6 +280,13 @@ import { LANGUAGE_CODES } from '../utils/constants';
   });
   popupTitle.addEventListener('keydown', (e: KeyboardEvent) => {
     if (popupTitle.contentEditable !== 'true') return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); navigateAutocomplete(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); navigateAutocomplete(-1); return; }
+    if (e.key === 'Tab' || (e.key === 'Enter' && acIndex >= 0)) {
+      e.preventDefault();
+      if (acceptAutocomplete()) { popupTitle.blur(); }
+      return;
+    }
     if (e.key === 'Enter') {
       e.preventDefault();
       popupTitle.blur();
@@ -523,6 +612,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
         const sel = window.getSelection();
         sel?.removeAllRanges();
         sel?.addRange(range);
+        showAutocomplete(titleEl);
       }
 
       if (action === 'export') {
@@ -535,8 +625,10 @@ import { LANGUAGE_CODES } from '../utils/constants';
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            const safeName = (response.title ?? m.title).replace(/[^a-zA-Z0-9_-]/g, '_');
-            a.download = `${safeName}.md`;
+            const title = (response.title ?? m.title).replace(/[^a-zA-Z0-9 _-]/g, '').trim();
+            const d = new Date(response.startTime ?? m.startTime);
+            const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+            a.download = `${title} ${dateStr}.md`;
             a.click();
             URL.revokeObjectURL(url);
           }
@@ -603,9 +695,11 @@ import { LANGUAGE_CODES } from '../utils/constants';
       const sel = window.getSelection();
       sel?.removeAllRanges();
       sel?.addRange(range);
+      showAutocomplete(titleEl);
     });
     titleEl.addEventListener('blur', () => {
       titleEl.contentEditable = 'false';
+      removeAutocomplete();
       const newTitle = titleEl.textContent?.trim();
       if (newTitle && newTitle !== m.title) {
         m.title = newTitle;
@@ -616,6 +710,13 @@ import { LANGUAGE_CODES } from '../utils/constants';
       }
     });
     titleEl.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); navigateAutocomplete(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); navigateAutocomplete(-1); return; }
+      if (e.key === 'Tab' || (e.key === 'Enter' && acIndex >= 0)) {
+        e.preventDefault();
+        if (acceptAutocomplete()) { titleEl.blur(); }
+        return;
+      }
       if (e.key === 'Enter') {
         e.preventDefault();
         titleEl.blur();
@@ -901,6 +1002,31 @@ import { LANGUAGE_CODES } from '../utils/constants';
         outline: 1px solid #8ab4f8;
         white-space: normal;
         cursor: text;
+      }
+
+      .autocomplete-list {
+        position: absolute;
+        background: #35363a;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        max-height: 120px;
+        overflow-y: auto;
+        z-index: 1000;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      }
+      .autocomplete-list:empty { display: none; }
+      .autocomplete-item {
+        padding: 5px 10px;
+        font-size: 12px;
+        color: #e8eaed;
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .autocomplete-item:hover,
+      .autocomplete-item.active {
+        background: rgba(138, 180, 248, 0.15);
       }
 
       .header-actions {

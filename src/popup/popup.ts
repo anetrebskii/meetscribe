@@ -130,8 +130,10 @@ import { MSG, type Meeting, type TranscriptEntry } from '../utils/types';
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            const safeName = (response.title ?? m.title).replace(/[^a-zA-Z0-9_-]/g, '_');
-            a.download = `${safeName}.md`;
+            const title = (response.title ?? m.title).replace(/[^a-zA-Z0-9 _-]/g, '').trim();
+            const d = new Date(response.startTime ?? m.startTime);
+            const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+            a.download = `${title} ${dateStr}.md`;
             a.click();
             URL.revokeObjectURL(url);
           }

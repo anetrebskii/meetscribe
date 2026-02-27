@@ -65,6 +65,7 @@ export const MSG = {
   CAPTION_SPEAKER_NAME: 'caption_speaker_name',
   DELETE_MEETING: 'delete_meeting',
   EXPORT_MEETING: 'export_meeting',
+  GET_MEETING_TITLES: 'get_meeting_titles',
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];

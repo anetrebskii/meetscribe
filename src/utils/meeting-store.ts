@@ -13,12 +13,35 @@ function generateId(): string {
 }
 
 
+/** Find the title from a past meeting with the same code (most recent first). */
+export function findTitleByCode(meetingCode: string): string | null {
+  let best: Meeting | null = null;
+  for (const meeting of meetings.values()) {
+    if (meeting.meetingCode === meetingCode && meeting.title !== meetingCode) {
+      if (!best || meeting.startTime > best.startTime) best = meeting;
+    }
+  }
+  return best?.title ?? null;
+}
+
+/** Return unique meeting titles for autocomplete. */
+export function getMeetingTitles(): string[] {
+  const titles = new Set<string>();
+  for (const meeting of meetings.values()) {
+    if (meeting.title && meeting.title !== meeting.meetingCode) {
+      titles.add(meeting.title);
+    }
+  }
+  return Array.from(titles);
+}
+
 export function createMeeting(meetingCode: string): Meeting {
   const now = Date.now();
+  const existingTitle = findTitleByCode(meetingCode);
   const meeting: Meeting = {
     id: generateId(),
     meetingCode,
-    title: meetingCode,
+    title: existingTitle ?? meetingCode,
     description: '',
     startTime: now,
     endTime: null,

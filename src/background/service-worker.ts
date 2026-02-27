@@ -37,6 +37,7 @@ import {
   setCurrentMeetingId,
   findRecentMeeting,
   resumeMeeting,
+  getMeetingTitles,
 } from '../utils/meeting-store';
 
 // --- State ---
@@ -437,10 +438,15 @@ async function handleMessage(
       if (meetingToExport) {
         const format = exportMsg.format ?? 'md';
         const content = formatExport(meetingToExport.entries, format, meetingToExport.title);
-        sendResponse({ content, format, title: meetingToExport.title });
+        sendResponse({ content, format, title: meetingToExport.title, startTime: meetingToExport.startTime });
       } else {
         sendResponse({ content: null });
       }
+      return;
+    }
+
+    case MSG.GET_MEETING_TITLES: {
+      sendResponse({ titles: getMeetingTitles() });
       return;
     }
 
