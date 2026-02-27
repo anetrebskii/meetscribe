@@ -696,7 +696,8 @@ import { LANGUAGE_CODES } from '../utils/constants';
           chrome.runtime.sendMessage({
             type: MSG.DELETE_MEETING,
             payload: { id: m.id },
-          }).then(() => {
+          }).then((resp) => {
+            if (resp && !resp.ok) { loadMeetingsList(); return; }
             item.remove();
             // If deleted the current meeting, switch back to live view
             if (isCurrent) {

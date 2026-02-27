@@ -427,6 +427,10 @@ async function handleMessage(
 
     case MSG.DELETE_MEETING: {
       const deleteMsg = message.payload as { id: string };
+      if (deleteMsg.id === getCurrentMeetingId()) {
+        sendResponse({ ok: false, error: 'Cannot delete a live meeting' });
+        return;
+      }
       deleteMeeting(deleteMsg.id);
       sendResponse({ ok: true });
       return;

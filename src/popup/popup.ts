@@ -180,7 +180,8 @@ import { MSG, type Meeting, type TranscriptEntry } from '../utils/types';
           chrome.runtime.sendMessage({
             type: MSG.DELETE_MEETING,
             payload: { id: m.id },
-          }).then(() => {
+          }).then((resp) => {
+            if (resp && !resp.ok) { loadMeetings(); return; }
             item.remove();
             if (contentEl.children.length === 0) {
               contentEl.innerHTML = '<div class="empty-state">No meetings yet</div>';
