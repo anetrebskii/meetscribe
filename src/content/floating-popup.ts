@@ -282,6 +282,8 @@ import { LANGUAGE_CODES } from '../utils/constants';
   });
   popupTitle.addEventListener('keydown', (e: KeyboardEvent) => {
     if (popupTitle.contentEditable !== 'true') return;
+    // Stop all keys from reaching Google Meet's shortcut handler (C=captions, D=camera, M=mic, etc.)
+    e.stopPropagation();
     if (e.key === 'ArrowDown') { e.preventDefault(); navigateAutocomplete(1); return; }
     if (e.key === 'ArrowUp') { e.preventDefault(); navigateAutocomplete(-1); return; }
     if (e.key === 'Tab' || (e.key === 'Enter' && acIndex >= 0)) {
@@ -774,6 +776,9 @@ import { LANGUAGE_CODES } from '../utils/constants';
       }
     });
     titleEl.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (titleEl.contentEditable !== 'true') return;
+      // Stop all keys from reaching Google Meet's shortcut handler
+      e.stopPropagation();
       if (e.key === 'ArrowDown') { e.preventDefault(); navigateAutocomplete(1); return; }
       if (e.key === 'ArrowUp') { e.preventDefault(); navigateAutocomplete(-1); return; }
       if (e.key === 'Tab' || (e.key === 'Enter' && acIndex >= 0)) {
