@@ -19,6 +19,7 @@ import {
   exportAsJson,
   exportAsMarkdown,
 } from '../utils/transcript-store';
+import { MEETING_CODE_DEDUP_MS } from '../utils/constants';
 import {
   createMeeting,
   getCurrentMeeting,
@@ -83,7 +84,9 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.url || changeInfo.status === 'complete') {
-    await updatePopupForTab(tabId, tab.url);
+    try {
+      await updatePopupForTab(tabId, tab.url);
+    } catch { /* tab may have been closed */ }
   }
 });
 
@@ -192,11 +195,18 @@ async function handleMessage(
   switch (message.type) {
     case MSG.MEETING_CODE: {
       const msg = message as unknown as { meetingCode: string };
-      // If we already have a live meeting with a different code, end it
+      // End the previous meeting if the code changed OR if this is a fresh
+      // page load (the same code arriving again after the dedup window means
+      // the user left and rejoined / joined a new session in the same room).
       const existingId = getCurrentMeetingId();
-      if (existingId && currentMeetingCode && currentMeetingCode !== msg.meetingCode) {
-        endMeeting(existingId);
-        broadcastToPopup({ type: 'meeting_ended', meetingId: existingId });
+      if (existingId) {
+        const codeChanged = !currentMeetingCode || currentMeetingCode !== msg.meetingCode;
+        const meeting = getCurrentMeeting();
+        const isNewPageLoad = !meeting || (Date.now() - meeting.startTime > MEETING_CODE_DEDUP_MS);
+        if (codeChanged || isNewPageLoad) {
+          endMeeting(existingId);
+          broadcastToPopup({ type: 'meeting_ended', meetingId: existingId });
+        }
       }
       currentMeetingCode = msg.meetingCode;
       // Create meeting immediately so it appears in the list before anyone speaks
