@@ -216,7 +216,32 @@ function ensureMeeting(meetingCode?: string): string {
   scheduleSessionPersist();
   updateExtensionIcon(true);
   broadcastToPopup({ type: 'meeting_started', meeting });
+
+  // Push the stored language preference to Google Meet.  The interceptor
+  // needs time to capture session headers from Meet's API calls, so delay.
+  syncLanguageToMeet();
+
   return meeting.id;
+}
+
+function syncLanguageToMeet(): void {
+  const { language } = getSettings();
+  if (!language || language === 'en') return; // 'en' is Meet's default — no need to push
+
+  // Delay to give the interceptor time to capture session headers
+  setTimeout(async () => {
+    try {
+      const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+      for (const tab of tabs) {
+        if (tab.id) {
+          chrome.tabs.sendMessage(tab.id, {
+            type: MSG.LANGUAGE_CHANGE,
+            language,
+          }).catch(() => {});
+        }
+      }
+    } catch { /* silent */ }
+  }, 5000);
 }
 
 // --- Message handling ---
