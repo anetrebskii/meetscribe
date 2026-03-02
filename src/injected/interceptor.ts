@@ -34,12 +34,35 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
     return match ? match[1] : null;
   }
 
-  const meetingCode = extractMeetingCode();
-  if (meetingCode) {
+  let lastMeetingCode = extractMeetingCode();
+  if (lastMeetingCode) {
     // Post immediately and also after a short delay (in case content script isn't ready yet)
-    postToContentScript({ type: MSG.MEETING_CODE, meetingCode });
-    setTimeout(() => postToContentScript({ type: MSG.MEETING_CODE, meetingCode }), 1000);
+    postToContentScript({ type: MSG.MEETING_CODE, meetingCode: lastMeetingCode });
+    setTimeout(() => postToContentScript({ type: MSG.MEETING_CODE, meetingCode: lastMeetingCode! }), 1000);
   }
+
+  // Detect SPA navigations (URL changes without full page reload) so the
+  // service worker learns about the new meeting code.
+  function onUrlChange(): void {
+    const code = extractMeetingCode();
+    if (code && code !== lastMeetingCode) {
+      lastMeetingCode = code;
+      debug('URL changed, new meeting code:', code);
+      postToContentScript({ type: MSG.MEETING_CODE, meetingCode: code });
+    }
+  }
+
+  const origPushState = history.pushState;
+  const origReplaceState = history.replaceState;
+  history.pushState = function (...args: Parameters<typeof origPushState>) {
+    origPushState.apply(this, args);
+    onUrlChange();
+  };
+  history.replaceState = function (...args: Parameters<typeof origReplaceState>) {
+    origReplaceState.apply(this, args);
+    onUrlChange();
+  };
+  window.addEventListener('popstate', onUrlChange);
 
   // ========================================
   // Language change API via UpdateMediaSession

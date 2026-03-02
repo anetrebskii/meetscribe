@@ -262,8 +262,11 @@
     document.addEventListener('DOMContentLoaded', hideCaptionOverlay);
   }
 
-  // Auto-enable captions once meeting is joined
+  // Auto-enable captions once meeting is joined.
+  // Keep the interval running until captions are confirmed active so that
+  // transient UI-timing failures don't permanently prevent auto-enable.
   let autoEnableCheckInterval: ReturnType<typeof setInterval> | null = null;
+  let autoEnableInProgress = false;
 
   function checkAndAutoEnable(): void {
     if (captionAutoEnabled) {
@@ -273,15 +276,16 @@
       }
       return;
     }
-    if (isMeetingJoined()) {
+    if (isMeetingJoined() && !autoEnableInProgress) {
+      autoEnableInProgress = true;
       log('Meeting joined detected, will auto-enable captions');
-      if (autoEnableCheckInterval) {
-        clearInterval(autoEnableCheckInterval);
-        autoEnableCheckInterval = null;
-      }
-      setTimeout(() => autoEnableCaptions(), 3000);
+      setTimeout(() => {
+        autoEnableCaptions(2).finally(() => { autoEnableInProgress = false; });
+      }, 3000);
     }
   }
 
-  autoEnableCheckInterval = setInterval(checkAndAutoEnable, 2000);
+  autoEnableCheckInterval = setInterval(checkAndAutoEnable, 15000);
+  // Run a fast initial check
+  setTimeout(checkAndAutoEnable, 2000);
 })();

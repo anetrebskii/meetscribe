@@ -1,11 +1,14 @@
 import type { TranscriptEntry, Settings } from './types';
-import { DEFAULT_SETTINGS, KEEPALIVE_PORT_NAME } from './types';
+import { DEFAULT_SETTINGS } from './types';
 import { STORAGE_DEBOUNCE_MS } from './constants';
 
 let entries: TranscriptEntry[] = [];
 let settings: Settings = { ...DEFAULT_SETTINGS };
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let idCounter = 0;
+// Set when clearEntries() is called; prevents a pending async restore from
+// overwriting fresh state with stale session-storage data.
+let entriesInvalidated = false;
 
 const MERGE_WINDOW_MS = 30_000;
 
@@ -163,6 +166,7 @@ export function clearEntries(): void {
   messageVersionMap.clear();
   entryPartsMap.clear();
   entryLastActivityMap.clear();
+  entriesInvalidated = true;
   persistNow();
 }
 
@@ -191,7 +195,9 @@ function persistNow(): void {
 export async function restoreFromStorage(): Promise<void> {
   try {
     const sessionData = await chrome.storage.session.get('transcript');
-    if (sessionData.transcript && Array.isArray(sessionData.transcript)) {
+    // Skip if clearEntries() was called while this async read was in flight —
+    // the session data is stale and would overwrite the fresh state.
+    if (!entriesInvalidated && sessionData.transcript && Array.isArray(sessionData.transcript)) {
       entries = sessionData.transcript;
       idCounter = entries.length;
       // Rebuild messageVersionMap from restored entries

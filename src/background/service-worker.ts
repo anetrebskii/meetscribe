@@ -28,13 +28,14 @@ import {
   addTranscriptEntry,
   updateEntryText,
   updateEntrySpeaker,
+  updateMeeting,
+  findTitleByCode,
   endMeeting,
   getMeetings,
   getMeeting,
   renameMeeting,
   deleteMeeting,
   restoreMeetings,
-  setCurrentMeetingId,
   getMeetingTitles,
 } from '../utils/meeting-store';
 
@@ -48,10 +49,43 @@ const recentActiveDevices: Array<{ deviceId: string; timestamp: number }> = [];
 let keepaliveDisconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const KEEPALIVE_GRACE_MS = 120_000; // 2 minutes grace before ending meeting
 
+// --- Session state persistence (survives service worker restarts) ---
+
+let sessionPersistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleSessionPersist(): void {
+  if (sessionPersistTimer) return;
+  sessionPersistTimer = setTimeout(() => {
+    sessionPersistTimer = null;
+    chrome.storage.session.set({
+      deviceMap: Object.fromEntries(deviceMap),
+      currentMeetingCode,
+    }).catch(() => {});
+  }, 2_000);
+}
+
+// Keep the old name as a convenience alias
+const scheduleDeviceMapPersist = scheduleSessionPersist;
+
+async function restoreSessionState(): Promise<void> {
+  try {
+    const data = await chrome.storage.session.get(['deviceMap', 'currentMeetingCode']);
+    if (data.deviceMap && typeof data.deviceMap === 'object') {
+      for (const [k, v] of Object.entries(data.deviceMap as Record<string, string>)) {
+        deviceMap.set(k, v);
+      }
+    }
+    if (typeof data.currentMeetingCode === 'string') {
+      currentMeetingCode = data.currentMeetingCode;
+    }
+  } catch { /* empty on first load */ }
+}
+
 // --- Initialization ---
 
 restoreFromStorage();
 restoreMeetings();
+restoreSessionState();
 
 // --- Extension icon state ---
 
@@ -123,8 +157,10 @@ chrome.runtime.onConnect.addListener((port) => {
             if (meetingId) {
               endMeeting(meetingId);
               broadcastToPopup({ type: 'meeting_ended', meetingId });
+              resetMeetingState();
             }
             currentMeetingCode = null;
+            scheduleSessionPersist();
             updateExtensionIcon(false);
           }
         }, KEEPALIVE_GRACE_MS);
@@ -159,18 +195,25 @@ function broadcastToPopup(message: unknown): void {
 
 // --- Meeting lifecycle ---
 
+function resetMeetingState(): void {
+  clearEntries();
+  deviceMap.clear();
+  recentActiveDevices.length = 0;
+  scheduleDeviceMapPersist();
+}
+
 function ensureMeeting(meetingCode?: string): string {
   const existingId = getCurrentMeetingId();
   if (existingId) return existingId;
 
-  // Clear stale state from previous meeting
+  // Clear transcript (but keep deviceMap — it may hold names from the same
+  // RTC session that survive a service-worker restart).
   clearEntries();
-  deviceMap.clear();
-  recentActiveDevices.length = 0;
 
   const code = meetingCode ?? currentMeetingCode ?? 'unknown';
   const meeting = createMeeting(code);
   currentMeetingCode = code;
+  scheduleSessionPersist();
   updateExtensionIcon(true);
   broadcastToPopup({ type: 'meeting_started', meeting });
   return meeting.id;
@@ -187,7 +230,7 @@ chrome.runtime.onMessage.addListener(
 
 async function handleMessage(
   message: ExtensionMessage,
-  sender: chrome.runtime.MessageSender,
+  _sender: chrome.runtime.MessageSender,
   sendResponse: (response?: unknown) => void,
 ): Promise<void> {
   const settings = getSettings();
@@ -195,20 +238,36 @@ async function handleMessage(
   switch (message.type) {
     case MSG.MEETING_CODE: {
       const msg = message as unknown as { meetingCode: string };
-      // End the previous meeting if the code changed OR if this is a fresh
-      // page load (the same code arriving again after the dedup window means
-      // the user left and rejoined / joined a new session in the same room).
       const existingId = getCurrentMeetingId();
       if (existingId) {
-        const codeChanged = !currentMeetingCode || currentMeetingCode !== msg.meetingCode;
         const meeting = getCurrentMeeting();
+
+        // If the meeting was created without a proper code (e.g. after a SW
+        // restart where captions arrived before MEETING_CODE), just patch it
+        // instead of ending + recreating.
+        if (meeting && meeting.meetingCode === 'unknown') {
+          const title = findTitleByCode(msg.meetingCode) ?? msg.meetingCode;
+          updateMeeting(existingId, { meetingCode: msg.meetingCode, title });
+          currentMeetingCode = msg.meetingCode;
+          scheduleSessionPersist();
+          broadcastToPopup({ type: 'meeting_started', meeting: getCurrentMeeting() });
+          break;
+        }
+
+        // End the previous meeting if the code changed OR if this is a fresh
+        // page load (the same code arriving again after the dedup window means
+        // the user left and rejoined / joined a new session in the same room).
+        const codeChanged = !currentMeetingCode || currentMeetingCode !== msg.meetingCode;
         const isNewPageLoad = !meeting || (Date.now() - meeting.startTime > MEETING_CODE_DEDUP_MS);
         if (codeChanged || isNewPageLoad) {
           endMeeting(existingId);
           broadcastToPopup({ type: 'meeting_ended', meetingId: existingId });
+          // Full reset — new meeting gets fresh device names from the new RTC session
+          resetMeetingState();
         }
       }
       currentMeetingCode = msg.meetingCode;
+      scheduleSessionPersist();
       // Create meeting immediately so it appears in the list before anyone speaks
       ensureMeeting(msg.meetingCode);
       break;
@@ -235,6 +294,7 @@ async function handleMessage(
       const deviceId = unnamedDevices[0].deviceId;
       const deviceName = nameMsg.speakerName;
       deviceMap.set(deviceId, deviceName);
+      scheduleDeviceMapPersist();
 
       // Retroactively fix entries
       const updatedEntries = renameSpeaker(deviceId, deviceName);
@@ -264,6 +324,7 @@ async function handleMessage(
       if (devMsg.deviceId && devMsg.deviceName) {
         const oldName = deviceMap.get(devMsg.deviceId);
         deviceMap.set(devMsg.deviceId, devMsg.deviceName);
+        scheduleDeviceMapPersist();
 
         // Retroactively fix entries that used the raw deviceId as speaker
         if (!oldName || oldName === devMsg.deviceId) {
