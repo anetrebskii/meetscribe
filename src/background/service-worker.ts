@@ -24,6 +24,7 @@ import {
   createMeeting,
   getCurrentMeeting,
   getCurrentMeetingId,
+  setCurrentMeetingId,
   addParticipant,
   addTranscriptEntry,
   updateEntryText,
@@ -37,6 +38,8 @@ import {
   deleteMeeting,
   restoreMeetings,
   getMeetingTitles,
+  findRecentMeeting,
+  resumeMeeting,
 } from '../utils/meeting-store';
 
 // --- State ---
@@ -60,6 +63,7 @@ function scheduleSessionPersist(): void {
     chrome.storage.session.set({
       deviceMap: Object.fromEntries(deviceMap),
       currentMeetingCode,
+      currentMeetingId: getCurrentMeetingId(),
     }).catch(() => {});
   }, 2_000);
 }
@@ -69,7 +73,7 @@ const scheduleDeviceMapPersist = scheduleSessionPersist;
 
 async function restoreSessionState(): Promise<void> {
   try {
-    const data = await chrome.storage.session.get(['deviceMap', 'currentMeetingCode']);
+    const data = await chrome.storage.session.get(['deviceMap', 'currentMeetingCode', 'currentMeetingId']);
     if (data.deviceMap && typeof data.deviceMap === 'object') {
       for (const [k, v] of Object.entries(data.deviceMap as Record<string, string>)) {
         deviceMap.set(k, v);
@@ -77,6 +81,15 @@ async function restoreSessionState(): Promise<void> {
     }
     if (typeof data.currentMeetingCode === 'string') {
       currentMeetingCode = data.currentMeetingCode;
+    }
+    // Restore currentMeetingId so the live meeting survives service worker restarts.
+    // Only restore if the meeting still exists in the store (already restored by restoreMeetings).
+    if (typeof data.currentMeetingId === 'string' && !getCurrentMeetingId()) {
+      const meeting = getMeeting(data.currentMeetingId);
+      if (meeting && !meeting.endTime) {
+        setCurrentMeetingId(data.currentMeetingId);
+        updateExtensionIcon(true);
+      }
     }
   } catch { /* empty on first load */ }
 }
@@ -206,11 +219,24 @@ function ensureMeeting(meetingCode?: string): string {
   const existingId = getCurrentMeetingId();
   if (existingId) return existingId;
 
+  const code = meetingCode ?? currentMeetingCode ?? 'unknown';
+
+  // Try to resume a recent meeting with the same code (e.g. after a
+  // service-worker restart where session storage lost the currentMeetingId).
+  const recent = findRecentMeeting(code);
+  if (recent) {
+    resumeMeeting(recent.id);
+    currentMeetingCode = code;
+    scheduleSessionPersist();
+    updateExtensionIcon(true);
+    broadcastToPopup({ type: 'meeting_started', meeting: recent });
+    return recent.id;
+  }
+
   // Clear transcript (but keep deviceMap — it may hold names from the same
   // RTC session that survive a service-worker restart).
   clearEntries();
 
-  const code = meetingCode ?? currentMeetingCode ?? 'unknown';
   const meeting = createMeeting(code);
   currentMeetingCode = code;
   scheduleSessionPersist();

@@ -96,9 +96,9 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
           capturedHeaders = headerObj;
         }
 
-        // Try to extract session ID from request body — only from media-session endpoints
-        const isMediaSessionUrl = url.includes('MediaSession') || url.includes('mediasessions');
-        if (init?.body && isMediaSessionUrl) {
+        // Try to extract session ID from request body.
+        // Any $rpc call may carry a mediasessions/ resource name in its protobuf payload.
+        if (init?.body) {
           try {
             let raw: Uint8Array | null = null;
             if (init.body instanceof ArrayBuffer) raw = new Uint8Array(init.body);
@@ -107,13 +107,13 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
 
             if (raw) {
               const bodyStr = new TextDecoder('utf-8', { fatal: false }).decode(raw);
-              // Prefer explicit mediasessions/ resource name
+              // Prefer explicit mediasessions/ resource name (present in many $rpc calls)
               const resourceMatch = bodyStr.match(/mediasessions\/([\w-]+)/);
               if (resourceMatch) {
                 capturedSessionId = resourceMatch[1];
                 debug('Captured session ID from request:', capturedSessionId);
-              } else if (url.includes('GetMediaSession') || !capturedSessionId) {
-                // Fall back to 20-40 char alphanumeric token
+              } else if (url.includes('GetMediaSession') && !capturedSessionId) {
+                // Fall back to 20-40 char alphanumeric token (only for MediaSession URLs)
                 const tokenMatch = bodyStr.match(/[A-Za-z0-9_-]{20,40}/);
                 if (tokenMatch) {
                   capturedSessionId = tokenMatch[0];
