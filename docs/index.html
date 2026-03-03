@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MeetScribe – Automatic Google Meet Transcription</title>
+  <meta name="description" content="MeetScribe automatically transcribes your Google Meet calls in real time. Speaker names, meeting history, and Markdown export — all stored privately on your device.">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #1a1b1e;
+      --bg2: #202124;
+      --border: rgba(255,255,255,0.07);
+      --text: #e8eaed;
+      --muted: #9aa0a6;
+      --accent: #8ab4f8;
+      --accent-dim: rgba(138,180,248,0.12);
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Nav ── */
+    nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 40px;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: rgba(26,27,30,0.92);
+      backdrop-filter: blur(12px);
+      z-index: 10;
+    }
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 17px;
+      color: var(--text);
+    }
+    .nav-brand img {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+    }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    .nav-links a { color: var(--muted); }
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--accent);
+      color: #1a1b1e;
+      font-weight: 600;
+      font-size: 14px;
+      padding: 8px 18px;
+      border-radius: 8px;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.88; text-decoration: none; }
+
+    /* ── Hero ── */
+    .hero {
+      text-align: center;
+      padding: 96px 24px 80px;
+      max-width: 760px;
+      margin: 0 auto;
+    }
+    .hero-badge {
+      display: inline-block;
+      background: var(--accent-dim);
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 500;
+      padding: 4px 14px;
+      border-radius: 20px;
+      margin-bottom: 28px;
+    }
+    .hero h1 {
+      font-size: clamp(36px, 6vw, 58px);
+      font-weight: 800;
+      letter-spacing: -1.5px;
+      line-height: 1.1;
+      margin-bottom: 22px;
+      color: var(--text);
+    }
+    .hero h1 span { color: var(--accent); }
+    .hero p {
+      font-size: 18px;
+      color: var(--muted);
+      max-width: 520px;
+      margin: 0 auto 40px;
+      line-height: 1.6;
+    }
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .btn-outline {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 14px;
+      padding: 8px 18px;
+      border-radius: 8px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .btn-outline:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+
+    /* ── Popup preview ── */
+    .preview-wrap {
+      display: flex;
+      justify-content: center;
+      padding: 0 24px 80px;
+      gap: 24px;
+    }
+    .popup-mock {
+      background: var(--bg2);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px var(--border);
+      width: 300px;
+      flex-shrink: 0;
+    }
+    .popup-mock.offset {
+      transform: translateY(24px);
+      opacity: 0.6;
+      width: 280px;
+    }
+    .mock-header {
+      padding: 11px 16px;
+      font-weight: 600;
+      font-size: 13px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(255,255,255,0.03);
+      display: flex; align-items: center; gap: 7px;
+    }
+    .mock-header .back { color: var(--accent); font-size: 12px; }
+    .mock-body { padding: 8px; }
+
+    .mock-item {
+      padding: 9px;
+      border-radius: 8px;
+      margin-bottom: 3px;
+    }
+    .mock-item.live {
+      background: rgba(138,180,248,0.08);
+      border: 1px solid rgba(138,180,248,0.18);
+    }
+    .mock-item-title { font-weight: 600; font-size: 12px; color: var(--text); }
+    .mock-item-meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
+    .mock-item-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+    .tag {
+      background: var(--accent-dim);
+      color: var(--accent);
+      font-size: 10px;
+      padding: 1px 7px;
+      border-radius: 8px;
+    }
+
+    .mock-entry { padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .mock-entry:last-child { border-bottom: none; }
+    .mock-entry .sp { font-weight: 700; font-size: 11px; color: var(--accent); margin-right: 5px; }
+    .mock-entry .ts { font-size: 10px; color: var(--muted); }
+    .mock-entry .tx { margin-top: 3px; font-size: 11px; color: #dadce0; line-height: 1.4; }
+    .mock-footer {
+      padding: 6px 14px;
+      font-size: 10px;
+      color: var(--muted);
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+
+    /* ── Features ── */
+    .section {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 24px 96px;
+    }
+    .section-label {
+      text-align: center;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent);
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .section-title {
+      text-align: center;
+      font-size: clamp(26px, 4vw, 36px);
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 48px;
+    }
+    .features {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+    }
+    .feature-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+    }
+    .feature-icon {
+      font-size: 24px;
+      margin-bottom: 14px;
+    }
+    .feature-title {
+      font-weight: 600;
+      font-size: 15px;
+      margin-bottom: 8px;
+    }
+    .feature-desc {
+      font-size: 14px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    /* ── How it works ── */
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+    }
+    .step {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+    }
+    .step-num {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      background: var(--accent-dim);
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 14px;
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 14px;
+    }
+    .step-title { font-weight: 600; font-size: 15px; margin-bottom: 6px; }
+    .step-desc { font-size: 14px; color: var(--muted); line-height: 1.6; }
+
+    /* ── Privacy callout ── */
+    .privacy-callout {
+      max-width: 960px;
+      margin: 0 auto 96px;
+      padding: 0 24px;
+    }
+    .privacy-box {
+      background: var(--accent-dim);
+      border: 1px solid rgba(138,180,248,0.2);
+      border-radius: 14px;
+      padding: 32px 40px;
+      display: flex;
+      align-items: flex-start;
+      gap: 20px;
+    }
+    .privacy-icon { font-size: 32px; flex-shrink: 0; }
+    .privacy-box h3 { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+    .privacy-box p { font-size: 15px; color: var(--muted); }
+
+    /* ── CTA ── */
+    .cta {
+      text-align: center;
+      padding: 80px 24px 96px;
+      border-top: 1px solid var(--border);
+    }
+    .cta h2 {
+      font-size: clamp(24px, 4vw, 36px);
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 14px;
+    }
+    .cta p { font-size: 16px; color: var(--muted); margin-bottom: 32px; }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 24px 40px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 13px;
+      color: var(--muted);
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    footer a { color: var(--muted); }
+    footer a:hover { color: var(--text); }
+
+    @media (max-width: 600px) {
+      nav { padding: 14px 20px; }
+      .nav-links .hide-mobile { display: none; }
+      footer { padding: 20px; }
+      .privacy-box { flex-direction: column; gap: 12px; padding: 24px; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <div class="nav-brand">
+      <img src="icon128.png" alt="MeetScribe icon">
+      MeetScribe
+    </div>
+    <div class="nav-links">
+      <a href="#features" class="hide-mobile">Features</a>
+      <a href="#how-it-works" class="hide-mobile">How it works</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="https://github.com/anetrebskii/meetscribe" class="hide-mobile">GitHub</a>
+      <a href="https://chromewebstore.google.com" class="btn">Add to Chrome</a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="hero-badge">Free Chrome Extension</div>
+    <h1>Transcribe your<br><span>Google Meet</span> calls</h1>
+    <p>MeetScribe captures every word in real time — speaker names, timestamps, full meeting history. No account needed.</p>
+    <div class="hero-actions">
+      <a href="https://chromewebstore.google.com" class="btn">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v6M5 8h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Add to Chrome — it's free
+      </a>
+      <a href="https://github.com/anetrebskii/meetscribe" class="btn-outline">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        View on GitHub
+      </a>
+    </div>
+  </section>
+
+  <!-- Popup preview -->
+  <div class="preview-wrap">
+    <div class="popup-mock offset">
+      <div class="mock-header">MeetScribe</div>
+      <div class="mock-body">
+        <div class="mock-item live">
+          <div class="mock-item-title">Q2 Product Planning</div>
+          <div class="mock-item-meta">Today · 23 min (live)</div>
+          <div class="mock-item-tags">
+            <span class="tag">Sarah Chen</span>
+            <span class="tag">Marcus Reid</span>
+            <span class="tag">Priya Sharma</span>
+          </div>
+        </div>
+        <div class="mock-item">
+          <div class="mock-item-title">Design Review</div>
+          <div class="mock-item-meta">Today · 47 min</div>
+          <div class="mock-item-tags"><span class="tag">Lena Volkov</span></div>
+        </div>
+        <div class="mock-item">
+          <div class="mock-item-title">Engineering Sync</div>
+          <div class="mock-item-meta">Yesterday · 31 min</div>
+          <div class="mock-item-tags"><span class="tag">Marcus Reid</span></div>
+        </div>
+        <div class="mock-item">
+          <div class="mock-item-title">Investor Update</div>
+          <div class="mock-item-meta">Feb 28 · 58 min</div>
+          <div class="mock-item-tags"><span class="tag">Priya Sharma</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="popup-mock">
+      <div class="mock-header">
+        <span class="back">←</span> Q2 Product Planning
+      </div>
+      <div class="mock-body">
+        <div class="mock-entry">
+          <span class="sp">Sarah Chen</span><span class="ts">10:03 AM</span>
+          <div class="tx">Let's get started — today we're planning the Q2 roadmap. Main focus is the new onboarding flow.</div>
+        </div>
+        <div class="mock-entry">
+          <span class="sp">Marcus Reid</span><span class="ts">10:04 AM</span>
+          <div class="tx">I've pushed the initial designs. We're moving account setup to after the first value moment.</div>
+        </div>
+        <div class="mock-entry">
+          <span class="sp">Priya Sharma</span><span class="ts">10:06 AM</span>
+          <div class="tx">That matches user research — people dropped off filling in company details before seeing value.</div>
+        </div>
+        <div class="mock-entry">
+          <span class="sp">Sarah Chen</span><span class="ts">10:08 AM</span>
+          <div class="tx">Agreed. Can you share the timeline? How long until a testable prototype?</div>
+        </div>
+        <div class="mock-entry">
+          <span class="sp">Marcus Reid</span><span class="ts">10:09 AM</span>
+          <div class="tx">End of next week for a clickable prototype.</div>
+        </div>
+      </div>
+      <div class="mock-footer">5 of 9 entries</div>
+    </div>
+  </div>
+
+  <!-- Features -->
+  <section class="section" id="features">
+    <div class="section-label">Features</div>
+    <div class="section-title">Everything you need from a meeting transcript</div>
+    <div class="features">
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <div class="feature-title">Real-time transcription</div>
+        <div class="feature-desc">Captions are captured live as people speak — no delay, no post-processing.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">👤</div>
+        <div class="feature-title">Speaker identification</div>
+        <div class="feature-desc">Each line is automatically attributed to the right speaker by name.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📋</div>
+        <div class="feature-title">Meeting history</div>
+        <div class="feature-desc">All past meetings are saved and searchable. Tap any meeting to review its full transcript.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📤</div>
+        <div class="feature-title">Markdown export</div>
+        <div class="feature-desc">Export any transcript as a formatted Markdown file — ready to paste into Notion, Obsidian, or any notes app.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🌐</div>
+        <div class="feature-title">Multi-language support</div>
+        <div class="feature-desc">Works with any language supported by Google Meet's live captions.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔒</div>
+        <div class="feature-title">Fully private</div>
+        <div class="feature-desc">All data stays on your device. No server, no account, no cloud sync.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section class="section" id="how-it-works">
+    <div class="section-label">How it works</div>
+    <div class="section-title">Up and running in seconds</div>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-title">Install the extension</div>
+        <div class="step-desc">Add MeetScribe from the Chrome Web Store. No account or sign-up required.</div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-title">Join a Google Meet call</div>
+        <div class="step-desc">MeetScribe starts capturing automatically as soon as captions are available.</div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-title">Review your transcript</div>
+        <div class="step-desc">Click the MeetScribe icon after the call to read, search, or export the full transcript.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Privacy callout -->
+  <div class="privacy-callout">
+    <div class="privacy-box">
+      <div class="privacy-icon">🔐</div>
+      <div>
+        <h3>Your conversations stay on your device</h3>
+        <p>MeetScribe never sends your transcript data anywhere. Everything is stored locally using Chrome's built-in storage API. Uninstalling the extension deletes all data permanently. <a href="privacy.html">Read the full privacy policy →</a></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- CTA -->
+  <section class="cta">
+    <h2>Start transcribing your meetings today</h2>
+    <p>Free, private, and works instantly. No account needed.</p>
+    <a href="https://chromewebstore.google.com" class="btn" style="font-size:15px; padding: 12px 28px;">
+      Add to Chrome — it's free
+    </a>
+  </section>
+
+  <footer>
+    <div style="display:flex; align-items:center; gap:8px;">
+      <img src="icon128.png" alt="" style="width:20px; height:20px; border-radius:4px;">
+      MeetScribe
+    </div>
+    <div style="display:flex; gap:20px;">
+      <a href="privacy.html">Privacy Policy</a>
+      <a href="https://github.com/anetrebskii/meetscribe">GitHub</a>
+    </div>
+  </footer>
+
+</body>
+</html>
