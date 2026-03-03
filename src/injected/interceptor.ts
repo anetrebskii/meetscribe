@@ -96,8 +96,9 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
           capturedHeaders = headerObj;
         }
 
-        // Try to extract session ID from request body
-        if (init?.body) {
+        // Try to extract session ID from request body — only from media-session endpoints
+        const isMediaSessionUrl = url.includes('MediaSession') || url.includes('mediasessions');
+        if (init?.body && isMediaSessionUrl) {
           try {
             let raw: Uint8Array | null = null;
             if (init.body instanceof ArrayBuffer) raw = new Uint8Array(init.body);
@@ -105,12 +106,21 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
             else if (typeof init.body === 'string') raw = new TextEncoder().encode(init.body);
 
             if (raw) {
-              // Look for session ID in text representation
-              const bodyStr = new TextDecoder().decode(raw);
-              const sessionMatch = bodyStr.match(/\b[A-Za-z0-9_-]{28}\b/);
-              if (sessionMatch) capturedSessionId = capturedSessionId || sessionMatch[0];
-
-}
+              const bodyStr = new TextDecoder('utf-8', { fatal: false }).decode(raw);
+              // Prefer explicit mediasessions/ resource name
+              const resourceMatch = bodyStr.match(/mediasessions\/([\w-]+)/);
+              if (resourceMatch) {
+                capturedSessionId = resourceMatch[1];
+                debug('Captured session ID from request:', capturedSessionId);
+              } else if (url.includes('GetMediaSession') || !capturedSessionId) {
+                // Fall back to 20-40 char alphanumeric token
+                const tokenMatch = bodyStr.match(/[A-Za-z0-9_-]{20,40}/);
+                if (tokenMatch) {
+                  capturedSessionId = tokenMatch[0];
+                  debug('Captured session ID (fallback) from request:', capturedSessionId);
+                }
+              }
+            }
           } catch { /* not text / decode error */ }
         }
 
@@ -148,6 +158,33 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
               }
             } catch (e) {
               debug('API: failed to decode SyncMeetingSpaceCollections response', e);
+            }
+          }).catch(() => {});
+        }
+
+        // Intercept GetMediaSession response to extract the authoritative session name
+        if (url.includes('GetMediaSession')) {
+          response.clone().arrayBuffer().then(buffer => {
+            try {
+              const data = new Uint8Array(buffer);
+              // Try raw binary first
+              let decoded = new TextDecoder('utf-8', { fatal: false }).decode(data);
+              // If it looks base64, decode it
+              if (/^[A-Za-z0-9+/=\r\n]+$/.test(decoded.trim()) && decoded.length < data.length * 2) {
+                try {
+                  const bin = atob(decoded.trim());
+                  decoded = bin;
+                } catch { /* not base64 */ }
+              }
+              const match = decoded.match(/mediasessions\/([\w-]+)/);
+              if (match) {
+                capturedSessionId = match[1];
+                debug('API: GetMediaSession — captured session ID:', capturedSessionId);
+              } else {
+                debug('API: GetMediaSession — no session ID found, raw length:', data.length);
+              }
+            } catch (e) {
+              debug('API: GetMediaSession response parse failed:', e);
             }
           }).catch(() => {});
         }
@@ -218,13 +255,15 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
     try {
       const body = encodeUpdateMediaSession(capturedSessionId, langCode);
       const url = `https://meet.google.com/$rpc/google.rtc.meetings.v1.MediaSessionService/UpdateMediaSession`;
+      debug('UpdateMediaSession → sessionId:', capturedSessionId, 'lang:', langCode, 'content-type:', capturedHeaders['content-type']);
       const resp = await originalFetch.call(window, url, {
         method: 'POST',
         headers: capturedHeaders,
         body: body.buffer as ArrayBuffer,
       });
       if (!resp.ok) {
-        debug('Language change failed:', resp.status, resp.statusText);
+        const errorBody = await resp.text().catch(() => '(unreadable)');
+        debug('Language change failed:', resp.status, resp.statusText, 'body:', errorBody);
       } else {
         persistLanguageCode(langCode);
         debug('Language change API call sent for', langCode);
@@ -408,6 +447,10 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
     });
 
     channel.addEventListener('message', async (event: MessageEvent) => {
+      // Only process messages from the currently-active channel for this label
+      // to prevent duplicates when multiple channels share the same label.
+      if (activeChannels.get(label) !== channel) return;
+
       const count = (channelMessageCounts.get(label) ?? 0) + 1;
       channelMessageCounts.set(label, count);
       if (label !== 'captions' || count <= 3) {
@@ -490,6 +533,26 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
     listenToChannel(channel);
     ensureChannels(pc);
   }
+
+  // Intercept DataChannel.send() to capture outgoing messages (e.g. language changes)
+  const origDCSend = RTCDataChannel.prototype.send as (this: RTCDataChannel, data: string | ArrayBuffer | Blob | ArrayBufferView) => void;
+  RTCDataChannel.prototype.send = function (data: string | ArrayBuffer | Blob | ArrayBufferView) {
+    const label = this.label;
+    try {
+      let bytes: Uint8Array | null = null;
+      if (data instanceof ArrayBuffer) bytes = new Uint8Array(data);
+      else if (data instanceof Uint8Array) bytes = data;
+      else if (ArrayBuffer.isView(data)) bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+
+      if (bytes) {
+        const hex = Array.from(bytes.slice(0, 80), b => b.toString(16).padStart(2, '0')).join(' ');
+        debug(`RTC SEND "${label}" (${bytes.length} bytes): ${hex}`);
+      } else {
+        debug(`RTC SEND "${label}" (non-binary):`, typeof data, String(data).substring(0, 200));
+      }
+    } catch { /* silent */ }
+    return origDCSend.call(this, data);
+  };
 
   function patchCreateDataChannel(OrigProto: RTCPeerConnection): void {
     OrigProto.createDataChannel = function (
