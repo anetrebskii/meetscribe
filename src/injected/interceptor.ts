@@ -70,6 +70,7 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
 
   let capturedSessionId: string | null = null;
   let capturedHeaders: Record<string, string> = {};
+  let pendingLanguage: string | null = null;
 
   // Fetch intercept — capture session context + extract device names from API responses
   const originalFetch = window.fetch;
@@ -112,6 +113,7 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
               if (resourceMatch) {
                 capturedSessionId = resourceMatch[1];
                 debug('Captured session ID from request:', capturedSessionId);
+                flushPendingLanguage();
               } else if (url.includes('GetMediaSession') && !capturedSessionId) {
                 // Fall back to 20-40 char alphanumeric token (only for MediaSession URLs)
                 const tokenMatch = bodyStr.match(/[A-Za-z0-9_-]{20,40}/);
@@ -180,6 +182,7 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
               if (match) {
                 capturedSessionId = match[1];
                 debug('API: GetMediaSession — captured session ID:', capturedSessionId);
+                flushPendingLanguage();
               } else {
                 debug('API: GetMediaSession — no session ID found, raw length:', data.length);
               }
@@ -246,9 +249,19 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
     }
   }
 
+  function flushPendingLanguage(): void {
+    if (pendingLanguage && capturedSessionId && capturedHeaders['authorization']) {
+      const lang = pendingLanguage;
+      pendingLanguage = null;
+      debug('Flushing pending language:', lang);
+      changeCaptionLanguage(lang);
+    }
+  }
+
   async function changeCaptionLanguage(langCode: string): Promise<void> {
     if (!capturedSessionId || !capturedHeaders['authorization']) {
-      debug('Cannot change language: no captured session/headers');
+      debug('Cannot change language yet, queuing:', langCode);
+      pendingLanguage = langCode;
       return;
     }
 

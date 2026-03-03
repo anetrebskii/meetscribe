@@ -302,6 +302,7 @@ async function handleMessage(
           currentMeetingCode = msg.meetingCode;
           scheduleSessionPersist();
           broadcastToPopup({ type: 'meeting_started', meeting: getCurrentMeeting() });
+          syncLanguageToMeet();
           break;
         }
 
@@ -321,6 +322,8 @@ async function handleMessage(
       scheduleSessionPersist();
       // Create meeting immediately so it appears in the list before anyone speaks
       ensureMeeting(msg.meetingCode);
+      // Fresh page load — push the stored language preference to the new interceptor
+      syncLanguageToMeet();
       break;
     }
 
