@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<!--
+  MeetScribe – Marquee promo tile  1400 × 560
+  Screenshot: DevTools → Cmd+Shift+P → "Capture full size screenshot"
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 1400px;
+      height: 560px;
+      overflow: hidden;
+      font-family: 'Google Sans', Roboto, Arial, sans-serif;
+    }
+    body {
+      background: #1a1b1e;
+      display: flex;
+      align-items: center;
+      padding: 0 100px;
+      gap: 80px;
+      position: relative;
+    }
+    body::before {
+      content: '';
+      position: absolute;
+      top: -200px; left: -100px;
+      width: 700px; height: 700px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(138,180,248,0.07) 0%, transparent 65%);
+      pointer-events: none;
+    }
+    body::after {
+      content: '';
+      position: absolute;
+      bottom: -200px; right: 200px;
+      width: 500px; height: 500px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(138,180,248,0.04) 0%, transparent 65%);
+      pointer-events: none;
+    }
+
+    .left {
+      flex-shrink: 0;
+      width: 380px;
+    }
+    .left .logo {
+      width: 64px; height: 64px;
+      border-radius: 16px;
+      margin-bottom: 20px;
+      display: block;
+    }
+    .left .name {
+      font-size: 48px;
+      font-weight: 700;
+      color: #e8eaed;
+      letter-spacing: -1px;
+      line-height: 1;
+      margin-bottom: 16px;
+    }
+    .left .tagline {
+      font-size: 18px;
+      color: #9aa0a6;
+      line-height: 1.5;
+      margin-bottom: 32px;
+    }
+    .left .tagline strong { color: #8ab4f8; font-weight: 500; }
+    .left .features {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .left .feature {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      color: #dadce0;
+    }
+    .left .feature .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #8ab4f8;
+      flex-shrink: 0;
+    }
+
+    .screens {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      position: relative;
+    }
+
+    .popup-card {
+      background: #202124;
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.07);
+      flex-shrink: 0;
+    }
+    .popup-card.main { width: 260px; }
+    .popup-card.secondary {
+      width: 240px;
+      opacity: 0.75;
+      transform: scale(0.92) translateY(16px);
+    }
+    .popup-card .card-header {
+      padding: 10px 14px;
+      font-weight: 600;
+      font-size: 12px;
+      color: #e8eaed;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .popup-card .card-header .back { color: #8ab4f8; font-size: 11px; }
+    .popup-card .card-body { padding: 8px; }
+
+    .card-item {
+      padding: 8px;
+      border-radius: 6px;
+      margin-bottom: 3px;
+    }
+    .card-item.live {
+      background: rgba(138,180,248,0.08);
+      border: 1px solid rgba(138,180,248,0.2);
+    }
+    .card-item-title { font-weight: 600; font-size: 11px; color: #e8eaed; }
+    .card-item-meta { font-size: 9px; color: #9aa0a6; margin-top: 2px; }
+    .card-item-tags { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 3px; }
+    .card-tag {
+      background: rgba(138,180,248,0.12);
+      color: #8ab4f8;
+      font-size: 8px;
+      padding: 1px 5px;
+      border-radius: 5px;
+    }
+
+    .card-entry {
+      padding: 5px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+    .card-entry:last-child { border-bottom: none; }
+    .card-entry .espeaker { font-weight: 700; font-size: 10px; color: #8ab4f8; margin-right: 4px; }
+    .card-entry .etime { font-size: 9px; color: #9aa0a6; }
+    .card-entry .etext { margin-top: 2px; font-size: 10px; color: #dadce0; line-height: 1.4; }
+    .card-footer {
+      padding: 5px 12px;
+      font-size: 9px;
+      color: #9aa0a6;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+  </style>
+</head>
+<body>
+  <div class="left">
+    <img class="logo" src="icons/icon128.png" alt="">
+    <div class="name">MeetScribe</div>
+    <div class="tagline">
+      <strong>Automatic transcription</strong><br>for Google Meet.
+    </div>
+    <div class="features">
+      <div class="feature"><span class="dot"></span>Captures every word, live</div>
+      <div class="feature"><span class="dot"></span>Speaker names automatically</div>
+      <div class="feature"><span class="dot"></span>Export transcripts as Markdown</div>
+      <div class="feature"><span class="dot"></span>No account. No uploads. Private.</div>
+    </div>
+  </div>
+
+  <div class="screens">
+    <!-- List view -->
+    <div class="popup-card secondary">
+      <div class="card-header">MeetScribe</div>
+      <div class="card-body">
+        <div class="card-item live">
+          <div class="card-item-title">Q2 Product Planning</div>
+          <div class="card-item-meta">Today · 23 min (live)</div>
+          <div class="card-item-tags">
+            <span class="card-tag">Sarah Chen</span>
+            <span class="card-tag">Marcus Reid</span>
+            <span class="card-tag">Priya Sharma</span>
+          </div>
+        </div>
+        <div class="card-item">
+          <div class="card-item-title">Design Review – Onboarding</div>
+          <div class="card-item-meta">Today · 47 min</div>
+          <div class="card-item-tags"><span class="card-tag">Lena Volkov</span><span class="card-tag">James Okafor</span></div>
+        </div>
+        <div class="card-item">
+          <div class="card-item-title">Engineering Sync</div>
+          <div class="card-item-meta">Yesterday · 31 min</div>
+          <div class="card-item-tags"><span class="card-tag">Marcus Reid</span><span class="card-tag">Tomasz W.</span></div>
+        </div>
+        <div class="card-item">
+          <div class="card-item-title">Investor Update – Series B</div>
+          <div class="card-item-meta">Feb 28 · 58 min</div>
+          <div class="card-item-tags"><span class="card-tag">Priya Sharma</span><span class="card-tag">David Park</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Detail / transcript view -->
+    <div class="popup-card main">
+      <div class="card-header">
+        <span class="back">←</span> Q2 Product Planning
+      </div>
+      <div class="card-body">
+        <div class="card-entry">
+          <span class="espeaker">Sarah Chen</span><span class="etime">10:03 AM</span>
+          <div class="etext">Let's get started — today we're planning the Q2 roadmap. Main focus is the new onboarding flow.</div>
+        </div>
+        <div class="card-entry">
+          <span class="espeaker">Marcus Reid</span><span class="etime">10:04 AM</span>
+          <div class="etext">I've pushed the initial designs. We're moving account setup to after the first value moment.</div>
+        </div>
+        <div class="card-entry">
+          <span class="espeaker">Priya Sharma</span><span class="etime">10:06 AM</span>
+          <div class="etext">That matches user research — people dropped off filling in company details before seeing value.</div>
+        </div>
+        <div class="card-entry">
+          <span class="espeaker">Sarah Chen</span><span class="etime">10:08 AM</span>
+          <div class="etext">Agreed. Can you share the timeline? How long until a testable prototype?</div>
+        </div>
+        <div class="card-entry">
+          <span class="espeaker">Marcus Reid</span><span class="etime">10:09 AM</span>
+          <div class="etext">End of next week for a clickable prototype.</div>
+        </div>
+      </div>
+      <div class="card-footer">5 of 9 entries</div>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<!--
+  MeetScribe – Small promo tile  440 × 280
+  Screenshot: DevTools → Cmd+Shift+P → "Capture full size screenshot"
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 440px;
+      height: 280px;
+      overflow: hidden;
+      font-family: 'Google Sans', Roboto, Arial, sans-serif;
+    }
+    body {
+      width: 440px;
+      height: 280px;
+      background: #1a1b1e;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 32px 28px 32px 36px;
+      gap: 20px;
+      position: relative;
+      overflow: hidden;
+    }
+    body::before {
+      content: '';
+      position: absolute;
+      top: -60px; left: -60px;
+      width: 260px; height: 260px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(138,180,248,0.08) 0%, transparent 70%);
+    }
+
+    .brand { flex-shrink: 0; }
+    .brand .logo {
+      width: 48px; height: 48px;
+      border-radius: 12px;
+      margin-bottom: 12px;
+      display: block;
+    }
+    .brand .name {
+      font-size: 22px;
+      font-weight: 700;
+      color: #e8eaed;
+      letter-spacing: -0.3px;
+      margin-bottom: 6px;
+    }
+    .brand .tagline {
+      font-size: 12px;
+      color: #9aa0a6;
+      line-height: 1.5;
+      max-width: 160px;
+    }
+    .brand .tagline strong {
+      color: #8ab4f8;
+      font-weight: 500;
+    }
+
+    .popup-preview {
+      width: 180px;
+      flex-shrink: 0;
+      background: #202124;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.06);
+      font-size: 10px;
+    }
+    .popup-preview .ph {
+      padding: 8px 10px;
+      font-weight: 600;
+      font-size: 11px;
+      color: #e8eaed;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+    }
+    .popup-preview .pi {
+      padding: 7px 8px;
+      border-radius: 6px;
+      margin: 4px 6px;
+    }
+    .popup-preview .pi.live {
+      background: rgba(138,180,248,0.08);
+      border: 1px solid rgba(138,180,248,0.2);
+    }
+    .popup-preview .pi-title {
+      font-weight: 600;
+      color: #e8eaed;
+      font-size: 10px;
+    }
+    .popup-preview .pi-meta {
+      font-size: 9px;
+      color: #9aa0a6;
+      margin-top: 2px;
+    }
+    .popup-preview .pi-tags {
+      display: flex; gap: 3px; flex-wrap: wrap; margin-top: 3px;
+    }
+    .popup-preview .tag {
+      background: rgba(138,180,248,0.12);
+      color: #8ab4f8;
+      font-size: 8px;
+      padding: 1px 5px;
+      border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="brand">
+    <img class="logo" src="icons/icon128.png" alt="">
+    <div class="name">MeetScribe</div>
+    <div class="tagline">
+      <strong>Auto-transcribe</strong> your<br>
+      Google Meet calls.<br>
+      Search, export, done.
+    </div>
+  </div>
+
+  <div class="popup-preview">
+    <div class="ph">MeetScribe</div>
+    <div class="pi live">
+      <div class="pi-title">Q2 Product Planning</div>
+      <div class="pi-meta">Today · 23 min (live)</div>
+      <div class="pi-tags">
+        <span class="tag">Sarah Chen</span>
+        <span class="tag">Marcus Reid</span>
+      </div>
+    </div>
+    <div class="pi">
+      <div class="pi-title">Design Review</div>
+      <div class="pi-meta">Today · 47 min</div>
+      <div class="pi-tags"><span class="tag">Lena Volkov</span></div>
+    </div>
+    <div class="pi">
+      <div class="pi-title">Engineering Sync</div>
+      <div class="pi-meta">Yesterday · 31 min</div>
+      <div class="pi-tags"><span class="tag">Marcus Reid</span></div>
+    </div>
+  </div>
+</body>
+</html>
