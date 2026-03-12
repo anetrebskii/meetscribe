@@ -51,6 +51,9 @@ let currentMeetingCode: string | null = null;
 const recentActiveDevices: Array<{ deviceId: string; timestamp: number }> = [];
 let keepaliveDisconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const KEEPALIVE_GRACE_MS = 120_000; // 2 minutes grace before ending meeting
+// Debounce device refresh requests
+let deviceRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+const DEVICE_REFRESH_DEBOUNCE_MS = 3_000; // Wait 3s to batch unknown deviceIds before requesting refresh
 
 // --- Session state persistence (survives service worker restarts) ---
 
@@ -89,6 +92,13 @@ async function restoreSessionState(): Promise<void> {
       if (meeting && !meeting.endTime) {
         setCurrentMeetingId(data.currentMeetingId);
         updateExtensionIcon(true);
+        // Backfill deviceMap from meeting participants (persistent storage) in case
+        // session storage was lost (e.g. extension update) but the meeting survived.
+        if (meeting.participants) {
+          for (const [id, name] of Object.entries(meeting.participants)) {
+            if (!deviceMap.has(id)) deviceMap.set(id, name);
+          }
+        }
       }
     }
   } catch { /* empty on first load */ }
@@ -98,7 +108,7 @@ async function restoreSessionState(): Promise<void> {
 
 restoreFromStorage();
 restoreMeetings();
-restoreSessionState();
+const sessionStateReady = restoreSessionState();
 
 // --- Extension icon state ---
 
@@ -208,6 +218,21 @@ function broadcastToPopup(message: unknown): void {
 
 // --- Meeting lifecycle ---
 
+function requestDeviceRefresh(): void {
+  if (deviceRefreshTimer) return; // already scheduled
+  deviceRefreshTimer = setTimeout(async () => {
+    deviceRefreshTimer = null;
+    try {
+      const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+      for (const tab of tabs) {
+        if (tab.id) {
+          chrome.tabs.sendMessage(tab.id, { type: MSG.REFRESH_DEVICES }).catch(() => {});
+        }
+      }
+    } catch { /* silent */ }
+  }, DEVICE_REFRESH_DEBOUNCE_MS);
+}
+
 function resetMeetingState(): void {
   clearEntries();
   deviceMap.clear();
@@ -284,6 +309,8 @@ async function handleMessage(
   _sender: chrome.runtime.MessageSender,
   sendResponse: (response?: unknown) => void,
 ): Promise<void> {
+  // Ensure deviceMap is restored before processing any messages
+  await sessionStateReady;
   const settings = getSettings();
 
   switch (message.type) {
@@ -417,6 +444,7 @@ async function handleMessage(
 
       const meetingId = ensureMeeting();
 
+      let hasUnknownDevices = false;
       for (const caption of rtcMsg.captions ?? []) {
         if (!caption.text) continue;
 
@@ -425,6 +453,7 @@ async function handleMessage(
           recentActiveDevices.unshift({ deviceId: caption.deviceId, timestamp: Date.now() });
           // Keep only last 10 entries
           if (recentActiveDevices.length > 10) recentActiveDevices.length = 10;
+          hasUnknownDevices = true;
         }
 
         const speaker = deviceMap.get(caption.deviceId) ?? caption.deviceId;
@@ -448,6 +477,11 @@ async function handleMessage(
             entry: result.entry,
           });
         }
+      }
+
+      // If we saw unknown device IDs, proactively refresh device info
+      if (hasUnknownDevices) {
+        requestDeviceRefresh();
       }
       break;
     }

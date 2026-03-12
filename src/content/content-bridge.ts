@@ -56,13 +56,18 @@ import { MSG, KEEPALIVE_PORT_NAME } from '../utils/types';
     }
   });
 
-  // Service worker → MAIN world relay (for language changes)
+  // Service worker → MAIN world relay (for language changes and device refresh)
   chrome.runtime.onMessage.addListener((message): undefined => {
     if (message.type === MSG.LANGUAGE_CHANGE) {
       window.postMessage({
         source: MESSAGE_SOURCE,
         type: MSG.LANGUAGE_CHANGE,
         language: message.language,
+      }, '*');
+    } else if (message.type === MSG.REFRESH_DEVICES) {
+      window.postMessage({
+        source: MESSAGE_SOURCE,
+        type: MSG.REFRESH_DEVICES,
       }, '*');
     }
   });

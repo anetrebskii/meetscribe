@@ -72,6 +72,11 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
   let capturedHeaders: Record<string, string> = {};
   let pendingLanguage: string | null = null;
   let mediaSessionChannel: RTCDataChannel | null = null;
+  // Captured SyncMeetingSpaceCollections request for replaying on device refresh
+  let capturedSyncBody: ArrayBuffer | null = null;
+  let capturedSyncUrl: string | null = null;
+  let lastDeviceRefreshTime = 0;
+  const DEVICE_REFRESH_COOLDOWN_MS = 10_000; // Don't re-fetch more often than every 10s
   // Saved early — the actual monkey-patch happens later in the RTC section
   const origDCSend = RTCDataChannel.prototype.send as (this: RTCDataChannel, data: string | ArrayBuffer | Blob | ArrayBufferView) => void;
 
@@ -137,6 +142,21 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
               }
             }
           } catch { /* not text / decode error */ }
+        }
+
+        // Capture SyncMeetingSpaceCollections request body for later replay
+        if (url.includes('SyncMeetingSpaceCollections') && init?.body) {
+          try {
+            if (init.body instanceof ArrayBuffer) {
+              capturedSyncBody = init.body.slice(0);
+            } else if (init.body instanceof Uint8Array) {
+              capturedSyncBody = (init.body.buffer as ArrayBuffer).slice(init.body.byteOffset, init.body.byteOffset + init.body.byteLength);
+            } else if (typeof init.body === 'string') {
+              capturedSyncBody = new TextEncoder().encode(init.body).buffer as ArrayBuffer;
+            }
+            capturedSyncUrl = url;
+            debug('Captured SyncMeetingSpaceCollections request body for replay');
+          } catch { /* silent */ }
         }
 
         debug('Captured API context from', url.split('/').pop());
@@ -236,15 +256,18 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
     });
   };
 
-  // Listen for language change requests from content script
+  // Listen for language change and device refresh requests from content script
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (!event.data || event.data.source !== MESSAGE_SOURCE) return;
-    if (event.data.type !== MSG.LANGUAGE_CHANGE) return;
 
-    const langCode = event.data.language as string;
-    debug('Language change requested:', langCode);
-    changeCaptionLanguage(langCode);
+    if (event.data.type === MSG.LANGUAGE_CHANGE) {
+      const langCode = event.data.language as string;
+      debug('Language change requested:', langCode);
+      changeCaptionLanguage(langCode);
+    } else if (event.data.type === MSG.REFRESH_DEVICES) {
+      refreshDeviceInfo();
+    }
   });
 
   function persistLanguageCode(langCode: string): void {
@@ -317,6 +340,59 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
       }
     } catch (e) {
       debug('Language change API call failed:', e);
+    }
+  }
+
+  async function refreshDeviceInfo(): Promise<void> {
+    const now = Date.now();
+    if (now - lastDeviceRefreshTime < DEVICE_REFRESH_COOLDOWN_MS) {
+      debug('Device refresh skipped — cooldown');
+      return;
+    }
+    lastDeviceRefreshTime = now;
+
+    if (!capturedSyncBody || !capturedSyncUrl || !capturedHeaders['authorization']) {
+      debug('Cannot refresh devices — no captured SyncMeetingSpaceCollections request');
+      return;
+    }
+
+    try {
+      debug('Refreshing device info via SyncMeetingSpaceCollections replay');
+      const resp = await originalFetch.call(window, capturedSyncUrl, {
+        method: 'POST',
+        headers: capturedHeaders,
+        body: capturedSyncBody,
+      });
+
+      if (!resp.ok) {
+        debug('Device refresh failed:', resp.status, resp.statusText);
+        return;
+      }
+
+      const text = await resp.text();
+      const binaryStr = atob(text);
+      const data = Uint8Array.from(binaryStr, c => c.charCodeAt(0));
+      const devices = parseDeviceCollection(data);
+
+      if (devices.length > 0) {
+        debug('Device refresh returned', devices.length, 'devices');
+        for (const d of devices) {
+          debug('Device refresh:', d.deviceId, '→', d.deviceName);
+          postToContentScript({
+            type: MSG.RTC_DEVICE_INFO,
+            deviceId: d.deviceId,
+            deviceName: d.deviceName,
+          });
+        }
+      } else {
+        debug('Device refresh: no devices parsed from response');
+        const strings = dumpAllStrings(data);
+        if (strings.length > 0) {
+          debug('Device refresh response strings:', strings.slice(0, 20));
+        }
+      }
+    } catch (e) {
+      debug('Device refresh failed:', e);
     }
   }
 

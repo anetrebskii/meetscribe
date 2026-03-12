@@ -66,6 +66,7 @@ export const MSG = {
   DELETE_MEETING: 'delete_meeting',
   EXPORT_MEETING: 'export_meeting',
   GET_MEETING_TITLES: 'get_meeting_titles',
+  REFRESH_DEVICES: 'refresh_devices',
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
