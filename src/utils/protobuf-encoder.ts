@@ -66,6 +66,41 @@ function concat(...parts: Uint8Array[]): Uint8Array {
  *     }
  *   }
  */
+/**
+ * Encode language change for RTC media-session data channel.
+ *
+ * Observed wire format (decoded from Google Meet's own sends):
+ *   field 1 (message):
+ *     field 2 (message):
+ *       field 1 (varint): 3
+ *       field 3 (message):
+ *         field 1 (message):
+ *           field 9 (pair): { 1: lang, 2: lang }
+ *         field 2 (message):
+ *           field 1: "client_config.caption_config"
+ */
+export function encodeRtcLanguageChange(langCode: string): Uint8Array {
+  const pair = concat(
+    encodeString(1, langCode),
+    encodeString(2, langCode),
+  );
+  const captionPreferences = encodeMessage(9, pair);
+  const clientConfig = encodeString(1, 'client_config.caption_config');
+
+  // inner field 3: { field 1: captionPreferences, field 2: clientConfig }
+  const field3 = concat(
+    encodeMessage(1, captionPreferences),
+    encodeMessage(2, clientConfig),
+  );
+
+  // field 2: { field 1: varint 3, field 3: ... }
+  const varint3 = concat(encodeTag(1, 0), encodeVarint(3));
+  const field2 = concat(varint3, encodeMessage(3, field3));
+
+  // outer: { field 1: { field 2: ... } }
+  return encodeMessage(1, encodeMessage(2, field2));
+}
+
 export function encodeUpdateMediaSession(sessionId: string, langCode: string): Uint8Array {
   // LanguagePair { 1: lang1, 2: lang2 }
   const pair = concat(

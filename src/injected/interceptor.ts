@@ -1,6 +1,6 @@
 import { MESSAGE_SOURCE, RTC_CHANNEL_NAMES, RTC_CAPTION_BATCH_MS } from '../utils/constants';
 import { parseCaptionMessage, parseDeviceInfo, parseDeviceCollection, parseChatMessage, dumpAllStrings } from '../utils/rtc-message-parser';
-import { encodeUpdateMediaSession } from '../utils/protobuf-encoder';
+import { encodeUpdateMediaSession, encodeRtcLanguageChange } from '../utils/protobuf-encoder';
 import { MSG, type RtcCaptionMessage } from '../utils/types';
 
 (function () {
@@ -71,6 +71,9 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
   let capturedSessionId: string | null = null;
   let capturedHeaders: Record<string, string> = {};
   let pendingLanguage: string | null = null;
+  let mediaSessionChannel: RTCDataChannel | null = null;
+  // Saved early — the actual monkey-patch happens later in the RTC section
+  const origDCSend = RTCDataChannel.prototype.send as (this: RTCDataChannel, data: string | ArrayBuffer | Blob | ArrayBufferView) => void;
 
   // Fetch intercept — capture session context + extract device names from API responses
   const originalFetch = window.fetch;
@@ -95,6 +98,7 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
             }
           }
           capturedHeaders = headerObj;
+          flushPendingLanguage();
         }
 
         // Try to extract session ID from request body.
@@ -114,12 +118,21 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
                 capturedSessionId = resourceMatch[1];
                 debug('Captured session ID from request:', capturedSessionId);
                 flushPendingLanguage();
+              } else if (url.includes('CreateMeetingDevice') && !capturedSessionId) {
+                // CreateMeetingDevice carries a raw 28-char session ID (no mediasessions/ prefix)
+                const tokenMatch = bodyStr.match(/\b[A-Za-z0-9_-]{28}\b/);
+                if (tokenMatch) {
+                  capturedSessionId = tokenMatch[0];
+                  debug('Captured session ID from CreateMeetingDevice:', capturedSessionId);
+                  flushPendingLanguage();
+                }
               } else if (url.includes('GetMediaSession') && !capturedSessionId) {
                 // Fall back to 20-40 char alphanumeric token (only for MediaSession URLs)
                 const tokenMatch = bodyStr.match(/[A-Za-z0-9_-]{20,40}/);
                 if (tokenMatch) {
                   capturedSessionId = tokenMatch[0];
                   debug('Captured session ID (fallback) from request:', capturedSessionId);
+                  flushPendingLanguage();
                 }
               }
             }
@@ -249,8 +262,15 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
     }
   }
 
+  function canChangeLanguage(): boolean {
+    // RTC channel is preferred — no session ID or headers needed
+    if (mediaSessionChannel && mediaSessionChannel.readyState === 'open') return true;
+    // HTTP fallback needs both session ID and auth headers
+    return !!(capturedSessionId && capturedHeaders['authorization']);
+  }
+
   function flushPendingLanguage(): void {
-    if (pendingLanguage && capturedSessionId && capturedHeaders['authorization']) {
+    if (pendingLanguage && canChangeLanguage()) {
       const lang = pendingLanguage;
       pendingLanguage = null;
       debug('Flushing pending language:', lang);
@@ -259,6 +279,20 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
   }
 
   async function changeCaptionLanguage(langCode: string): Promise<void> {
+    // Prefer RTC data channel — works without session ID or HTTP headers
+    if (mediaSessionChannel && mediaSessionChannel.readyState === 'open') {
+      try {
+        const body = encodeRtcLanguageChange(langCode);
+        origDCSend.call(mediaSessionChannel, body.buffer as ArrayBuffer);
+        persistLanguageCode(langCode);
+        debug('Language change sent via RTC media-session channel for', langCode);
+        return;
+      } catch (e) {
+        debug('RTC language change failed, trying HTTP fallback:', e);
+        // Fall through to HTTP
+      }
+    }
+
     if (!capturedSessionId || !capturedHeaders['authorization']) {
       debug('Cannot change language yet, queuing:', langCode);
       pendingLanguage = langCode;
@@ -548,10 +582,15 @@ import { MSG, type RtcCaptionMessage } from '../utils/types';
   }
 
   // Intercept DataChannel.send() to capture outgoing messages (e.g. language changes)
-  const origDCSend = RTCDataChannel.prototype.send as (this: RTCDataChannel, data: string | ArrayBuffer | Blob | ArrayBufferView) => void;
   RTCDataChannel.prototype.send = function (data: string | ArrayBuffer | Blob | ArrayBufferView) {
     const label = this.label;
     try {
+      // Capture the media-session channel for RTC-based language changes
+      if (label === 'media-session' && this.readyState === 'open') {
+        mediaSessionChannel = this;
+        flushPendingLanguage();
+      }
+
       let bytes: Uint8Array | null = null;
       if (data instanceof ArrayBuffer) bytes = new Uint8Array(data);
       else if (data instanceof Uint8Array) bytes = data;
