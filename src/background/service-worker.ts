@@ -12,7 +12,7 @@ import {
   getSettings,
   updateSettings,
   restoreFromStorage,
-  renameSpeaker,
+  renameSpeakerByDeviceId,
   exportAsText,
   exportAsSrt,
   exportAsVtt,
@@ -409,8 +409,8 @@ async function handleMessage(
       deviceMap.set(deviceId, deviceName);
       scheduleDeviceMapPersist();
 
-      // Retroactively fix entries
-      const updatedEntries = renameSpeaker(deviceId, deviceName);
+      // Retroactively fix entries (by deviceId to also catch placeholder names)
+      const updatedEntries = renameSpeakerByDeviceId(deviceId, deviceName);
       for (const updated of updatedEntries) {
         const meetingId = getCurrentMeetingId();
         if (meetingId) {
@@ -440,14 +440,13 @@ async function handleMessage(
         deviceMap.set(devMsg.deviceId, devMsg.deviceName);
         scheduleDeviceMapPersist();
 
-        // Retroactively fix entries that used the raw deviceId as speaker
+        // Retroactively fix entries that used a placeholder or raw deviceId as speaker
         if (!oldName || oldName === devMsg.deviceId) {
-          const updatedEntries = renameSpeaker(devMsg.deviceId, devMsg.deviceName);
+          const updatedEntries = renameSpeakerByDeviceId(devMsg.deviceId, devMsg.deviceName);
           for (const entry of updatedEntries) {
             const meetingId = getCurrentMeetingId();
             if (meetingId) {
               updateEntryText(meetingId, entry.id, entry.text);
-              // Also fix speaker in meeting-store
               updateEntrySpeaker(meetingId, entry.id, devMsg.deviceName);
             }
             broadcastToPopup({ type: 'entry_updated', entry });
@@ -490,7 +489,7 @@ async function handleMessage(
           console.debug('[MeetTranscript] Unknown device in caption:', caption.deviceId, '| deviceMap size:', deviceMap.size, '| known devices:', [...deviceMap.keys()].join(', '));
         }
 
-        const speaker = resolveDeviceName(caption.deviceId) ?? caption.deviceId;
+        const speaker = resolveDeviceName(caption.deviceId) ?? 'Participant';
 
         const result = updateOrAddEntry(
           caption.text,
@@ -527,7 +526,7 @@ async function handleMessage(
       const chatMsg = message as unknown as { deviceId: string; messageId: string; text: string; timestamp: number };
       if (!chatMsg.text) break;
 
-      const chatSpeaker = resolveDeviceName(chatMsg.deviceId) ?? chatMsg.deviceId;
+      const chatSpeaker = resolveDeviceName(chatMsg.deviceId) ?? 'Participant';
       const meetingId = ensureMeeting();
 
       const result = updateOrAddEntry(`[Chat] ${chatMsg.text}`, chatSpeaker);

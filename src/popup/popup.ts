@@ -299,11 +299,9 @@ import { MSG, type Meeting, type TranscriptEntry } from '../utils/types';
     const div = document.createElement('div');
     div.className = 'entry';
     const time = new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const deviceIdHtml = entry.deviceId ? `<span class="device-id">${escapeHtml(entry.deviceId)}</span>` : '';
     div.innerHTML = `
       <span class="speaker">${escapeHtml(entry.speaker)}</span>
       <span class="time">${time}</span>
-      ${deviceIdHtml}
       <div class="text">${escapeHtml(entry.text)}</div>
     `;
     return div;

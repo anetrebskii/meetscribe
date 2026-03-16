@@ -146,6 +146,19 @@ export function renameSpeaker(oldName: string, newName: string): TranscriptEntry
   return updated;
 }
 
+/** Retroactively rename entries by deviceId (catches entries with placeholder speaker). */
+export function renameSpeakerByDeviceId(deviceId: string, newName: string): TranscriptEntry[] {
+  const updated: TranscriptEntry[] = [];
+  for (const entry of entries) {
+    if (entry.deviceId === deviceId && entry.speaker !== newName) {
+      entry.speaker = newName;
+      updated.push(entry);
+    }
+  }
+  if (updated.length > 0) schedulePersist();
+  return updated;
+}
+
 export function getEntries(): TranscriptEntry[] {
   return [...entries];
 }
