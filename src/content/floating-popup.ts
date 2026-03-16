@@ -16,18 +16,18 @@ import { LANGUAGE_CODES } from '../utils/constants';
   let isMinimized = false;
   let isHidden = true; // Start hidden, auto-show when in a real meeting
 
-  /** True when the current page URL looks like an active meeting room. */
-  function isOnMeetingPage(): boolean {
-    return /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}(\/|$)/.test(window.location.pathname);
-  }
+
   let isDragging = false;
   let isResizing = false;
+  let resizeEdge = '';
   let dragOffsetX = 0;
   let dragOffsetY = 0;
   let resizeStartX = 0;
   let resizeStartY = 0;
   let resizeStartW = 0;
   let resizeStartH = 0;
+  let resizeStartLeft = 0;
+  let resizeStartTop = 0;
   let autoScroll = true;
   let currentView: 'live' | 'meetings' | 'meeting-detail' = 'live';
   let viewingMeetingId: string | null = null;
@@ -84,7 +84,14 @@ import { LANGUAGE_CODES } from '../utils/constants';
         <span id="footer-right"></span>
       </div>
     </div>
-    <div class="resize-handle" id="resize-handle"></div>
+    <div class="edge edge-n" data-edge="n"></div>
+    <div class="edge edge-s" data-edge="s"></div>
+    <div class="edge edge-w" data-edge="w"></div>
+    <div class="edge edge-e" data-edge="e"></div>
+    <div class="edge edge-nw" data-edge="nw"></div>
+    <div class="edge edge-ne" data-edge="ne"></div>
+    <div class="edge edge-sw" data-edge="sw"></div>
+    <div class="edge edge-se" data-edge="se"></div>
   `;
 
   // --- Element references ---
@@ -103,7 +110,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
   const btnMeetings = shadow.getElementById('btn-meetings')!;
   const btnCopy = shadow.getElementById('btn-copy')!;
   const btnExport = shadow.getElementById('btn-export')!;
-  const resizeHandle = shadow.getElementById('resize-handle')!;
+  const edgeHandles = shadow.querySelectorAll<HTMLElement>('.edge');
   const toolbarEl = shadow.getElementById('toolbar')!;
   const footerEl = shadow.getElementById('footer')!;
   const backNav = shadow.getElementById('back-nav')!;
@@ -320,7 +327,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
   btnMinimize.addEventListener('click', () => {
     isMinimized = !isMinimized;
     bodyEl.style.display = isMinimized ? 'none' : '';
-    resizeHandle.style.display = isMinimized ? 'none' : '';
+    edgeHandles.forEach(el => el.style.display = isMinimized ? 'none' : '');
     container.classList.toggle('minimized', isMinimized);
     btnMinimize.innerHTML = isMinimized ? '&#9744;' : '&#8211;';
     btnMinimize.title = isMinimized ? 'Expand' : 'Minimize';
@@ -457,10 +464,26 @@ import { LANGUAGE_CODES } from '../utils/constants';
       host.style.bottom = 'auto';
     }
     if (isResizing) {
-      const dw = e.clientX - resizeStartX;
-      const dh = e.clientY - resizeStartY;
-      popupWidth = Math.max(MIN_WIDTH, resizeStartW + dw);
-      popupHeight = Math.max(MIN_HEIGHT, resizeStartH + dh);
+      const dx = e.clientX - resizeStartX;
+      const dy = e.clientY - resizeStartY;
+      if (resizeEdge.includes('e')) {
+        popupWidth = Math.max(MIN_WIDTH, resizeStartW + dx);
+      }
+      if (resizeEdge.includes('s')) {
+        popupHeight = Math.max(MIN_HEIGHT, resizeStartH + dy);
+      }
+      if (resizeEdge.includes('w')) {
+        const newW = Math.max(MIN_WIDTH, resizeStartW - dx);
+        host.style.left = `${resizeStartLeft + (resizeStartW - newW)}px`;
+        host.style.right = 'auto';
+        popupWidth = newW;
+      }
+      if (resizeEdge.includes('n')) {
+        const newH = Math.max(MIN_HEIGHT, resizeStartH - dy);
+        host.style.top = `${resizeStartTop + (resizeStartH - newH)}px`;
+        host.style.bottom = 'auto';
+        popupHeight = newH;
+      }
       applySize();
     }
   });
@@ -473,19 +496,26 @@ import { LANGUAGE_CODES } from '../utils/constants';
     if (isResizing) {
       isResizing = false;
       saveSize();
+      savePosition();
     }
   });
 
   // --- Resizing ---
 
-  resizeHandle.addEventListener('mousedown', (e: MouseEvent) => {
-    isResizing = true;
-    resizeStartX = e.clientX;
-    resizeStartY = e.clientY;
-    resizeStartW = popupWidth;
-    resizeStartH = popupHeight;
-    e.preventDefault();
-    e.stopPropagation();
+  edgeHandles.forEach(el => {
+    el.addEventListener('mousedown', (e: MouseEvent) => {
+      isResizing = true;
+      resizeEdge = el.dataset.edge ?? '';
+      resizeStartX = e.clientX;
+      resizeStartY = e.clientY;
+      resizeStartW = popupWidth;
+      resizeStartH = popupHeight;
+      const rect = host.getBoundingClientRect();
+      resizeStartLeft = rect.left;
+      resizeStartTop = rect.top;
+      e.preventDefault();
+      e.stopPropagation();
+    });
   });
 
   function applySize(): void {
@@ -864,11 +894,6 @@ import { LANGUAGE_CODES } from '../utils/constants';
             break;
 
           case 'new_entry':
-            // Auto-show on first transcript entry (user has truly joined the meeting)
-            if (isHidden && isOnMeetingPage()) {
-              isHidden = false;
-              host.style.display = '';
-            }
             entries.push(message.entry);
             appendEntry(message.entry);
             break;
@@ -1289,28 +1314,16 @@ import { LANGUAGE_CODES } from '../utils/constants';
         flex-shrink: 0;
       }
 
-      /* Resize handle */
-      .resize-handle {
-        position: absolute;
-        right: 0;
-        bottom: 0;
-        width: 16px;
-        height: 16px;
-        cursor: nwse-resize;
-        z-index: 10;
-      }
-
-      .resize-handle::after {
-        content: '';
-        position: absolute;
-        right: 4px;
-        bottom: 4px;
-        width: 8px;
-        height: 8px;
-        border-right: 2px solid rgba(255, 255, 255, 0.2);
-        border-bottom: 2px solid rgba(255, 255, 255, 0.2);
-        border-radius: 0 0 2px 0;
-      }
+      /* Resize edges & corners */
+      .edge { position: absolute; z-index: 10; }
+      .edge-n { top: -3px; left: 6px; right: 6px; height: 6px; cursor: ns-resize; }
+      .edge-s { bottom: -3px; left: 6px; right: 6px; height: 6px; cursor: ns-resize; }
+      .edge-w { left: -3px; top: 6px; bottom: 6px; width: 6px; cursor: ew-resize; }
+      .edge-e { right: -3px; top: 6px; bottom: 6px; width: 6px; cursor: ew-resize; }
+      .edge-nw { top: -3px; left: -3px; width: 10px; height: 10px; cursor: nwse-resize; }
+      .edge-ne { top: -3px; right: -3px; width: 10px; height: 10px; cursor: nesw-resize; }
+      .edge-sw { bottom: -3px; left: -3px; width: 10px; height: 10px; cursor: nesw-resize; }
+      .edge-se { bottom: -3px; right: -3px; width: 10px; height: 10px; cursor: nwse-resize; }
 
       /* Meetings list */
       .meeting-item {
