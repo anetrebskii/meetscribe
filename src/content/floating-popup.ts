@@ -14,7 +14,12 @@ import { LANGUAGE_CODES } from '../utils/constants';
   let currentMeeting: Meeting | null = null;
   let participantCount = 0;
   let isMinimized = false;
-  let isHidden = true; // Start hidden, show on icon click
+  let isHidden = true; // Start hidden, auto-show when in a real meeting
+
+  /** True when the current page URL looks like an active meeting room. */
+  function isOnMeetingPage(): boolean {
+    return /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}(\/|$)/.test(window.location.pathname);
+  }
   let isDragging = false;
   let isResizing = false;
   let dragOffsetX = 0;
@@ -859,6 +864,11 @@ import { LANGUAGE_CODES } from '../utils/constants';
             break;
 
           case 'new_entry':
+            // Auto-show on first transcript entry (user has truly joined the meeting)
+            if (isHidden && isOnMeetingPage()) {
+              isHidden = false;
+              host.style.display = '';
+            }
             entries.push(message.entry);
             appendEntry(message.entry);
             break;
@@ -930,7 +940,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
         host.style.bottom = pos.bottom ?? 'auto';
       } else {
         host.style.right = '20px';
-        host.style.bottom = '80px';
+        host.style.top = '20px';
       }
 
       const size = result[STORAGE_SIZE_KEY];
@@ -941,7 +951,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
       applySize();
     } catch {
       host.style.right = '20px';
-      host.style.bottom = '80px';
+      host.style.top = '20px';
       applySize();
     }
   }
