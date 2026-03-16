@@ -48,6 +48,7 @@ export function updateOrAddEntry(
   speaker: string,
   messageId?: string,
   messageVersion?: number,
+  deviceId?: string,
 ): { entry: TranscriptEntry; isUpdate: boolean } | null {
   if (!text.trim()) return null;
 
@@ -98,6 +99,7 @@ export function updateOrAddEntry(
       speaker,
       timestamp: now,
       messageId,
+      deviceId,
     };
     entries.push(entry);
     entryPartsMap.set(entry.id, [{ messageId, text: text.trim() }]);
@@ -115,6 +117,7 @@ export function updateOrAddEntry(
     text: text.trim(),
     speaker,
     timestamp: Date.now(),
+    deviceId,
   };
   entries.push(entry);
   schedulePersist();
@@ -268,7 +271,8 @@ function formatVttTime(ms: number): string {
 }
 
 export function exportAsJson(data: TranscriptEntry[]): string {
-  return JSON.stringify(data, null, 2);
+  const cleaned = data.map(({ deviceId: _deviceId, ...rest }) => rest);
+  return JSON.stringify(cleaned, null, 2);
 }
 
 export function exportAsMarkdown(data: TranscriptEntry[], title?: string): string {

@@ -4,6 +4,7 @@ export interface TranscriptEntry {
   speaker: string;
   timestamp: number;
   messageId?: string;
+  deviceId?: string;
 }
 
 export interface Meeting {

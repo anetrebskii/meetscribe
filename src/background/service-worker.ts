@@ -107,8 +107,9 @@ async function restoreSessionState(): Promise<void> {
 // --- Initialization ---
 
 restoreFromStorage();
-restoreMeetings();
-const sessionStateReady = restoreSessionState();
+// Ensure meetings are loaded before restoring session state, so the
+// deviceMap backfill from meeting.participants works reliably.
+const sessionStateReady = restoreMeetings().then(() => restoreSessionState());
 
 // --- Extension icon state ---
 
@@ -219,11 +220,16 @@ function broadcastToPopup(message: unknown): void {
 // --- Meeting lifecycle ---
 
 function requestDeviceRefresh(): void {
-  if (deviceRefreshTimer) return; // already scheduled
+  if (deviceRefreshTimer) {
+    console.debug('[MeetTranscript] Device refresh already scheduled, skipping');
+    return;
+  }
+  console.debug('[MeetTranscript] Scheduling device refresh in', DEVICE_REFRESH_DEBOUNCE_MS, 'ms');
   deviceRefreshTimer = setTimeout(async () => {
     deviceRefreshTimer = null;
     try {
       const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+      console.debug('[MeetTranscript] Sending device refresh to', tabs.length, 'Meet tabs');
       for (const tab of tabs) {
         if (tab.id) {
           chrome.tabs.sendMessage(tab.id, { type: MSG.REFRESH_DEVICES }).catch(() => {});
@@ -238,6 +244,23 @@ function resetMeetingState(): void {
   deviceMap.clear();
   recentActiveDevices.length = 0;
   scheduleDeviceMapPersist();
+}
+
+/** Look up display name for a device ID.  Falls back to the persistent
+ *  meeting.participants map when the in-memory deviceMap doesn't have it
+ *  (e.g. after a service-worker restart where session storage was stale). */
+function resolveDeviceName(deviceId: string): string | undefined {
+  const name = deviceMap.get(deviceId);
+  if (name) return name;
+  // Fallback: check the current meeting's persisted participants
+  const meeting = getCurrentMeeting();
+  if (meeting?.participants[deviceId]) {
+    // Re-populate deviceMap so future lookups are fast
+    const fallbackName = meeting.participants[deviceId];
+    deviceMap.set(deviceId, fallbackName);
+    return fallbackName;
+  }
+  return undefined;
 }
 
 function ensureMeeting(meetingCode?: string): string {
@@ -341,8 +364,15 @@ async function handleMessage(
         if (codeChanged || isNewPageLoad) {
           endMeeting(existingId);
           broadcastToPopup({ type: 'meeting_ended', meetingId: existingId });
-          // Full reset — new meeting gets fresh device names from the new RTC session
-          resetMeetingState();
+          if (codeChanged) {
+            // Full reset — new meeting room gets fresh device names
+            resetMeetingState();
+          } else {
+            // Same meeting code (rejoin / page reload) — keep deviceMap so
+            // participant names survive until fresh RTC device info arrives.
+            clearEntries();
+            recentActiveDevices.length = 0;
+          }
         }
       }
       currentMeetingCode = msg.meetingCode;
@@ -364,10 +394,12 @@ async function handleMessage(
       const unnamedDevices: Array<{ deviceId: string; timestamp: number }> = [];
       for (const entry of recentActiveDevices) {
         if (now - entry.timestamp > 10000) break;
-        if (!deviceMap.has(entry.deviceId) || deviceMap.get(entry.deviceId) === entry.deviceId) {
+        if (!resolveDeviceName(entry.deviceId) || deviceMap.get(entry.deviceId) === entry.deviceId) {
           unnamedDevices.push(entry);
         }
       }
+
+      console.debug('[MeetTranscript] Caption speaker name from DOM:', nameMsg.speakerName, '| unnamed devices in window:', unnamedDevices.length, '| recent active devices:', recentActiveDevices.length);
 
       // Only assign if exactly one unnamed device — avoids mismatching
       if (unnamedDevices.length !== 1) break;
@@ -404,6 +436,7 @@ async function handleMessage(
       const devMsg = message as unknown as { deviceId: string; deviceName: string };
       if (devMsg.deviceId && devMsg.deviceName) {
         const oldName = deviceMap.get(devMsg.deviceId);
+        console.debug('[MeetTranscript] Device info received:', devMsg.deviceId, '→', devMsg.deviceName, '| previous:', oldName ?? '(none)', '| deviceMap size:', deviceMap.size);
         deviceMap.set(devMsg.deviceId, devMsg.deviceName);
         scheduleDeviceMapPersist();
 
@@ -449,20 +482,22 @@ async function handleMessage(
         if (!caption.text) continue;
 
         // Track this device as recently active (for DOM speaker name correlation)
-        if (!deviceMap.has(caption.deviceId)) {
+        if (!resolveDeviceName(caption.deviceId)) {
           recentActiveDevices.unshift({ deviceId: caption.deviceId, timestamp: Date.now() });
           // Keep only last 10 entries
           if (recentActiveDevices.length > 10) recentActiveDevices.length = 10;
           hasUnknownDevices = true;
+          console.debug('[MeetTranscript] Unknown device in caption:', caption.deviceId, '| deviceMap size:', deviceMap.size, '| known devices:', [...deviceMap.keys()].join(', '));
         }
 
-        const speaker = deviceMap.get(caption.deviceId) ?? caption.deviceId;
+        const speaker = resolveDeviceName(caption.deviceId) ?? caption.deviceId;
 
         const result = updateOrAddEntry(
           caption.text,
           speaker,
           caption.messageId,
           caption.messageVersion,
+          caption.deviceId,
         );
 
         if (result) {
@@ -492,7 +527,7 @@ async function handleMessage(
       const chatMsg = message as unknown as { deviceId: string; messageId: string; text: string; timestamp: number };
       if (!chatMsg.text) break;
 
-      const chatSpeaker = deviceMap.get(chatMsg.deviceId) ?? chatMsg.deviceId;
+      const chatSpeaker = resolveDeviceName(chatMsg.deviceId) ?? chatMsg.deviceId;
       const meetingId = ensureMeeting();
 
       const result = updateOrAddEntry(`[Chat] ${chatMsg.text}`, chatSpeaker);

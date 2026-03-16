@@ -513,9 +513,11 @@ import { LANGUAGE_CODES } from '../utils/constants';
     div.className = 'entry';
     div.dataset.id = entry.id;
     const time = new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const deviceIdHtml = entry.deviceId ? `<span class="device-id">${escapeHtml(entry.deviceId)}</span>` : '';
     div.innerHTML = `
       <span class="speaker">${escapeHtml(entry.speaker)}</span>
       <span class="time">${time}</span>
+      ${deviceIdHtml}
       <div class="text">${escapeHtml(entry.text)}</div>
     `;
     return div;
@@ -1248,6 +1250,18 @@ import { LANGUAGE_CODES } from '../utils/constants';
       .time {
         color: #9aa0a6;
         font-size: 11px;
+      }
+
+      .device-id {
+        display: block;
+        color: #6b7280;
+        font-size: 9px;
+        font-family: monospace;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 100%;
+        opacity: 0.7;
       }
 
       .text {
