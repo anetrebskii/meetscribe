@@ -45,7 +45,8 @@ import {
 // --- State ---
 
 const popupPorts = new Set<chrome.runtime.Port>();
-const deviceMap = new Map<string, string>(); // deviceId → display name
+const DEVICE_MAP_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const deviceMap = new Map<string, { name: string; ts: number }>(); // deviceId → { name, timestamp }
 let currentMeetingCode: string | null = null;
 // Track recently active device IDs for DOM-based speaker name correlation
 const recentActiveDevices: Array<{ deviceId: string; timestamp: number }> = [];
@@ -55,7 +56,7 @@ const KEEPALIVE_GRACE_MS = 120_000; // 2 minutes grace before ending meeting
 let deviceRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 const DEVICE_REFRESH_DEBOUNCE_MS = 3_000; // Wait 3s to batch unknown deviceIds before requesting refresh
 
-// --- Session state persistence (survives service worker restarts) ---
+// --- Session state persistence (survives service worker restarts & extension updates) ---
 
 let sessionPersistTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -63,8 +64,20 @@ function scheduleSessionPersist(): void {
   if (sessionPersistTimer) return;
   sessionPersistTimer = setTimeout(() => {
     sessionPersistTimer = null;
+    // deviceMap goes to chrome.storage.local so it survives extension updates.
+    // Prune expired entries before persisting.
+    const now = Date.now();
+    const persistMap: Record<string, { name: string; ts: number }> = {};
+    for (const [k, v] of deviceMap) {
+      if (now - v.ts < DEVICE_MAP_TTL_MS) {
+        persistMap[k] = v;
+      } else {
+        deviceMap.delete(k);
+      }
+    }
+    chrome.storage.local.set({ deviceMap: persistMap }).catch(() => {});
+    // Volatile session state stays in session storage
     chrome.storage.session.set({
-      deviceMap: Object.fromEntries(deviceMap),
       currentMeetingCode,
       currentMeetingId: getCurrentMeetingId(),
     }).catch(() => {});
@@ -76,29 +89,29 @@ const scheduleDeviceMapPersist = scheduleSessionPersist;
 
 async function restoreSessionState(): Promise<void> {
   try {
-    const data = await chrome.storage.session.get(['deviceMap', 'currentMeetingCode', 'currentMeetingId']);
-    if (data.deviceMap && typeof data.deviceMap === 'object') {
-      for (const [k, v] of Object.entries(data.deviceMap as Record<string, string>)) {
-        deviceMap.set(k, v);
+    // Restore deviceMap from persistent local storage, skipping expired entries
+    const now = Date.now();
+    const local = await chrome.storage.local.get(['deviceMap']);
+    if (local.deviceMap && typeof local.deviceMap === 'object') {
+      for (const [k, v] of Object.entries(local.deviceMap as Record<string, { name: string; ts: number }>)) {
+        if (v && v.name && v.ts && now - v.ts < DEVICE_MAP_TTL_MS) {
+          deviceMap.set(k, v);
+        }
       }
     }
-    if (typeof data.currentMeetingCode === 'string') {
-      currentMeetingCode = data.currentMeetingCode;
+
+    // Restore volatile session state
+    const session = await chrome.storage.session.get(['currentMeetingCode', 'currentMeetingId']);
+    if (typeof session.currentMeetingCode === 'string') {
+      currentMeetingCode = session.currentMeetingCode;
     }
     // Restore currentMeetingId so the live meeting survives service worker restarts.
     // Only restore if the meeting still exists in the store (already restored by restoreMeetings).
-    if (typeof data.currentMeetingId === 'string' && !getCurrentMeetingId()) {
-      const meeting = getMeeting(data.currentMeetingId);
+    if (typeof session.currentMeetingId === 'string' && !getCurrentMeetingId()) {
+      const meeting = getMeeting(session.currentMeetingId);
       if (meeting && !meeting.endTime) {
-        setCurrentMeetingId(data.currentMeetingId);
+        setCurrentMeetingId(session.currentMeetingId);
         updateExtensionIcon(true);
-        // Backfill deviceMap from meeting participants (persistent storage) in case
-        // session storage was lost (e.g. extension update) but the meeting survived.
-        if (meeting.participants) {
-          for (const [id, name] of Object.entries(meeting.participants)) {
-            if (!deviceMap.has(id)) deviceMap.set(id, name);
-          }
-        }
       }
     }
   } catch { /* empty on first load */ }
@@ -241,26 +254,19 @@ function requestDeviceRefresh(): void {
 
 function resetMeetingState(): void {
   clearEntries();
-  deviceMap.clear();
   recentActiveDevices.length = 0;
-  scheduleDeviceMapPersist();
 }
 
-/** Look up display name for a device ID.  Falls back to the persistent
- *  meeting.participants map when the in-memory deviceMap doesn't have it
- *  (e.g. after a service-worker restart where session storage was stale). */
+/** Look up display name for a device ID. The deviceMap is persisted to
+ *  chrome.storage.local so it survives SW restarts and extension updates. */
 function resolveDeviceName(deviceId: string): string | undefined {
-  const name = deviceMap.get(deviceId);
-  if (name) return name;
-  // Fallback: check the current meeting's persisted participants
-  const meeting = getCurrentMeeting();
-  if (meeting?.participants[deviceId]) {
-    // Re-populate deviceMap so future lookups are fast
-    const fallbackName = meeting.participants[deviceId];
-    deviceMap.set(deviceId, fallbackName);
-    return fallbackName;
+  const entry = deviceMap.get(deviceId);
+  if (!entry) return undefined;
+  if (Date.now() - entry.ts >= DEVICE_MAP_TTL_MS) {
+    deviceMap.delete(deviceId);
+    return undefined;
   }
-  return undefined;
+  return entry.name;
 }
 
 function ensureMeeting(meetingCode?: string): string {
@@ -359,7 +365,10 @@ async function handleMessage(
         // End the previous meeting if the code changed OR if this is a fresh
         // page load (the same code arriving again after the dedup window means
         // the user left and rejoined / joined a new session in the same room).
-        const codeChanged = !currentMeetingCode || currentMeetingCode !== msg.meetingCode;
+        // If currentMeetingCode is null (e.g. after SW restart with lost session
+        // storage), check the meeting's own code to avoid a false "code changed".
+        const effectiveCurrentCode = currentMeetingCode ?? meeting?.meetingCode;
+        const codeChanged = !effectiveCurrentCode || effectiveCurrentCode !== msg.meetingCode;
         const isNewPageLoad = !meeting || (Date.now() - meeting.startTime > MEETING_CODE_DEDUP_MS);
         if (codeChanged || isNewPageLoad) {
           endMeeting(existingId);
@@ -394,7 +403,7 @@ async function handleMessage(
       const unnamedDevices: Array<{ deviceId: string; timestamp: number }> = [];
       for (const entry of recentActiveDevices) {
         if (now - entry.timestamp > 10000) break;
-        if (!resolveDeviceName(entry.deviceId) || deviceMap.get(entry.deviceId) === entry.deviceId) {
+        if (!resolveDeviceName(entry.deviceId) || resolveDeviceName(entry.deviceId) === entry.deviceId) {
           unnamedDevices.push(entry);
         }
       }
@@ -406,7 +415,7 @@ async function handleMessage(
 
       const deviceId = unnamedDevices[0].deviceId;
       const deviceName = nameMsg.speakerName;
-      deviceMap.set(deviceId, deviceName);
+      deviceMap.set(deviceId, { name: deviceName, ts: Date.now() });
       scheduleDeviceMapPersist();
 
       // Retroactively fix entries (by deviceId to also catch placeholder names)
@@ -435,9 +444,9 @@ async function handleMessage(
     case MSG.RTC_DEVICE_INFO: {
       const devMsg = message as unknown as { deviceId: string; deviceName: string };
       if (devMsg.deviceId && devMsg.deviceName) {
-        const oldName = deviceMap.get(devMsg.deviceId);
+        const oldName = resolveDeviceName(devMsg.deviceId);
         console.debug('[MeetTranscript] Device info received:', devMsg.deviceId, '→', devMsg.deviceName, '| previous:', oldName ?? '(none)', '| deviceMap size:', deviceMap.size);
-        deviceMap.set(devMsg.deviceId, devMsg.deviceName);
+        deviceMap.set(devMsg.deviceId, { name: devMsg.deviceName, ts: Date.now() });
         scheduleDeviceMapPersist();
 
         // Retroactively fix entries that used a placeholder or raw deviceId as speaker
@@ -489,7 +498,7 @@ async function handleMessage(
           console.debug('[MeetTranscript] Unknown device in caption:', caption.deviceId, '| deviceMap size:', deviceMap.size, '| known devices:', [...deviceMap.keys()].join(', '));
         }
 
-        const speaker = resolveDeviceName(caption.deviceId) ?? 'Participant';
+        const speaker = resolveDeviceName(caption.deviceId) ?? caption.deviceId;
 
         const result = updateOrAddEntry(
           caption.text,
@@ -526,7 +535,7 @@ async function handleMessage(
       const chatMsg = message as unknown as { deviceId: string; messageId: string; text: string; timestamp: number };
       if (!chatMsg.text) break;
 
-      const chatSpeaker = resolveDeviceName(chatMsg.deviceId) ?? 'Participant';
+      const chatSpeaker = resolveDeviceName(chatMsg.deviceId) ?? chatMsg.deviceId;
       const meetingId = ensureMeeting();
 
       const result = updateOrAddEntry(`[Chat] ${chatMsg.text}`, chatSpeaker);
