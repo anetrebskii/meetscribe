@@ -1,32 +1,43 @@
 import type { TranscriptEntry, Settings } from './types';
 import { DEFAULT_SETTINGS } from './types';
-import { STORAGE_DEBOUNCE_MS } from './constants';
 
-let entries: TranscriptEntry[] = [];
 let settings: Settings = { ...DEFAULT_SETTINGS };
-let persistTimer: ReturnType<typeof setTimeout> | null = null;
-let idCounter = 0;
-// Set when clearEntries() is called; prevents a pending async restore from
-// overwriting fresh state with stale session-storage data.
-let entriesInvalidated = false;
 
 const MERGE_WINDOW_MS = 30_000;
 
-// Progressive dedup: track messageId → { entryId, version }
-const messageVersionMap = new Map<string, { entryId: string; version: number }>();
+// --- Per-session state ---
 
-// Track parts per merged entry: entryId → [{ messageId, text }]
-const entryPartsMap = new Map<string, Array<{ messageId: string; text: string }>>();
-
-// Track last activity time per entry for merge window
-const entryLastActivityMap = new Map<string, number>();
-
-function generateId(): string {
-  return `${Date.now()}-${++idCounter}`;
+interface SessionState {
+  entries: TranscriptEntry[];
+  messageVersionMap: Map<string, { entryId: string; version: number }>;
+  entryPartsMap: Map<string, Array<{ messageId: string; text: string }>>;
+  entryLastActivityMap: Map<string, number>;
+  idCounter: number;
 }
 
-function rebuildEntryText(entryId: string): string {
-  const parts = entryPartsMap.get(entryId);
+const sessionStates = new Map<string, SessionState>();
+
+function getSession(sessionId: string): SessionState {
+  let s = sessionStates.get(sessionId);
+  if (!s) {
+    s = {
+      entries: [],
+      messageVersionMap: new Map(),
+      entryPartsMap: new Map(),
+      entryLastActivityMap: new Map(),
+      idCounter: 0,
+    };
+    sessionStates.set(sessionId, s);
+  }
+  return s;
+}
+
+function generateId(session: SessionState): string {
+  return `${Date.now()}-${++session.idCounter}`;
+}
+
+function rebuildEntryText(session: SessionState, entryId: string): string {
+  const parts = session.entryPartsMap.get(entryId);
   if (!parts || parts.length === 0) return '';
   return parts.map(p => p.text).join(' ');
 }
@@ -44,6 +55,7 @@ function rebuildEntryText(entryId: string): string {
  *   → create new entry
  */
 export function updateOrAddEntry(
+  sessionId: string,
   text: string,
   speaker: string,
   messageId?: string,
@@ -52,138 +64,119 @@ export function updateOrAddEntry(
 ): { entry: TranscriptEntry; isUpdate: boolean } | null {
   if (!text.trim()) return null;
 
+  const session = getSession(sessionId);
+
   if (messageId) {
     // --- Version update for known messageId ---
-    const existing = messageVersionMap.get(messageId);
+    const existing = session.messageVersionMap.get(messageId);
     if (existing) {
       const version = messageVersion ?? 0;
       if (version <= existing.version) return null;
 
       existing.version = version;
 
-      const entry = entries.find(e => e.id === existing.entryId);
+      const entry = session.entries.find(e => e.id === existing.entryId);
       if (entry) {
         // Update this part's text and rebuild merged text
-        const parts = entryPartsMap.get(entry.id);
+        const parts = session.entryPartsMap.get(entry.id);
         if (parts) {
           const part = parts.find(p => p.messageId === messageId);
           if (part) part.text = text.trim();
-          entry.text = rebuildEntryText(entry.id);
+          entry.text = rebuildEntryText(session, entry.id);
         } else {
           entry.text = text.trim();
         }
-        schedulePersist();
         return { entry, isUpdate: true };
       }
     }
 
     // --- Try to merge into last entry if same speaker within 30s ---
-    const last = entries.length > 0 ? entries[entries.length - 1] : null;
-    const lastActivity = last ? (entryLastActivityMap.get(last.id) ?? last.timestamp) : 0;
+    const last = session.entries.length > 0 ? session.entries[session.entries.length - 1] : null;
+    const lastActivity = last ? (session.entryLastActivityMap.get(last.id) ?? last.timestamp) : 0;
     if (last && last.speaker === speaker && (Date.now() - lastActivity) < MERGE_WINDOW_MS) {
-      const parts = entryPartsMap.get(last.id) ?? [];
+      const parts = session.entryPartsMap.get(last.id) ?? [];
       parts.push({ messageId, text: text.trim() });
-      entryPartsMap.set(last.id, parts);
-      messageVersionMap.set(messageId, { entryId: last.id, version: messageVersion ?? 0 });
-      entryLastActivityMap.set(last.id, Date.now());
-      last.text = rebuildEntryText(last.id);
-      schedulePersist();
+      session.entryPartsMap.set(last.id, parts);
+      session.messageVersionMap.set(messageId, { entryId: last.id, version: messageVersion ?? 0 });
+      session.entryLastActivityMap.set(last.id, Date.now());
+      last.text = rebuildEntryText(session, last.id);
       return { entry: last, isUpdate: true };
     }
 
     // --- New entry ---
     const now = Date.now();
     const entry: TranscriptEntry = {
-      id: generateId(),
+      id: generateId(session),
       text: text.trim(),
       speaker,
       timestamp: now,
       messageId,
       deviceId,
     };
-    entries.push(entry);
-    entryPartsMap.set(entry.id, [{ messageId, text: text.trim() }]);
-    entryLastActivityMap.set(entry.id, now);
-    messageVersionMap.set(messageId, { entryId: entry.id, version: messageVersion ?? 0 });
-    schedulePersist();
+    session.entries.push(entry);
+    session.entryPartsMap.set(entry.id, [{ messageId, text: text.trim() }]);
+    session.entryLastActivityMap.set(entry.id, now);
+    session.messageVersionMap.set(messageId, { entryId: entry.id, version: messageVersion ?? 0 });
     return { entry, isUpdate: false };
   }
 
   // No messageId — simple dedup by text within window
-  if (isDuplicate(text, speaker)) return null;
+  if (isDuplicate(sessionId, text, speaker)) return null;
 
   const entry: TranscriptEntry = {
-    id: generateId(),
+    id: generateId(session),
     text: text.trim(),
     speaker,
     timestamp: Date.now(),
     deviceId,
   };
-  entries.push(entry);
-  schedulePersist();
+  session.entries.push(entry);
   return { entry, isUpdate: false };
 }
 
-export function isDuplicate(text: string, speaker: string, windowMs?: number): boolean {
+export function isDuplicate(sessionId: string, text: string, speaker: string, windowMs?: number): boolean {
   const window = windowMs ?? settings.dedupeWindowMs;
   const cutoff = Date.now() - window;
   const normalized = text.trim().toLowerCase();
-  return entries.some(
+  const session = getSession(sessionId);
+  return session.entries.some(
     e => e.timestamp >= cutoff && e.text.trim().toLowerCase() === normalized && e.speaker === speaker,
   );
 }
 
-/** Retroactively rename all entries with oldName to newName. Returns updated entries. */
-export function renameSpeaker(oldName: string, newName: string): TranscriptEntry[] {
-  const updated: TranscriptEntry[] = [];
-  for (const entry of entries) {
-    if (entry.speaker === oldName) {
-      entry.speaker = newName;
-      updated.push(entry);
-    }
-  }
-  if (updated.length > 0) schedulePersist();
-  return updated;
-}
-
 /** Retroactively rename entries by deviceId (catches entries with placeholder speaker). */
-export function renameSpeakerByDeviceId(deviceId: string, newName: string): TranscriptEntry[] {
+export function renameSpeakerByDeviceId(sessionId: string, deviceId: string, newName: string): TranscriptEntry[] {
+  const session = getSession(sessionId);
   const updated: TranscriptEntry[] = [];
-  for (const entry of entries) {
+  for (const entry of session.entries) {
     if (entry.deviceId === deviceId && entry.speaker !== newName) {
       entry.speaker = newName;
       updated.push(entry);
     }
   }
-  if (updated.length > 0) schedulePersist();
   return updated;
 }
 
-export function getEntries(): TranscriptEntry[] {
-  return [...entries];
+export function getEntries(sessionId: string): TranscriptEntry[] {
+  const session = getSession(sessionId);
+  return [...session.entries];
 }
 
-export function restoreEntries(stored: TranscriptEntry[]): void {
-  entries = [...stored];
-  idCounter = entries.length;
-  messageVersionMap.clear();
-  entryPartsMap.clear();
-  entryLastActivityMap.clear();
+export function clearEntries(sessionId: string): void {
+  sessionStates.delete(sessionId);
+}
+
+/** Seed a session's transcript state from existing meeting entries (e.g. after SW restart). */
+export function seedSession(sessionId: string, entries: TranscriptEntry[]): void {
+  const session = getSession(sessionId);
+  if (session.entries.length > 0) return; // already populated
+  session.entries = [...entries];
+  session.idCounter = entries.length;
   for (const entry of entries) {
     if (entry.messageId) {
-      messageVersionMap.set(entry.messageId, { entryId: entry.id, version: 0 });
+      session.messageVersionMap.set(entry.messageId, { entryId: entry.id, version: 0 });
     }
   }
-}
-
-export function clearEntries(): void {
-  entries = [];
-  idCounter = 0;
-  messageVersionMap.clear();
-  entryPartsMap.clear();
-  entryLastActivityMap.clear();
-  entriesInvalidated = true;
-  persistNow();
 }
 
 export function getSettings(): Settings {
@@ -196,35 +189,7 @@ export function updateSettings(partial: Partial<Settings>): Settings {
   return { ...settings };
 }
 
-function schedulePersist(): void {
-  if (persistTimer) return;
-  persistTimer = setTimeout(() => {
-    persistTimer = null;
-    persistNow();
-  }, STORAGE_DEBOUNCE_MS);
-}
-
-function persistNow(): void {
-  chrome.storage.session.set({ transcript: entries }).catch(() => {});
-}
-
 export async function restoreFromStorage(): Promise<void> {
-  try {
-    const sessionData = await chrome.storage.session.get('transcript');
-    // Skip if clearEntries() was called while this async read was in flight —
-    // the session data is stale and would overwrite the fresh state.
-    if (!entriesInvalidated && sessionData.transcript && Array.isArray(sessionData.transcript)) {
-      entries = sessionData.transcript;
-      idCounter = entries.length;
-      // Rebuild messageVersionMap from restored entries
-      for (const entry of entries) {
-        if (entry.messageId) {
-          messageVersionMap.set(entry.messageId, { entryId: entry.id, version: 0 });
-        }
-      }
-    }
-  } catch { /* empty session storage on first load */ }
-
   try {
     const localData = await chrome.storage.local.get('settings');
     if (localData.settings) {

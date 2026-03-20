@@ -2,11 +2,15 @@ import { MESSAGE_SOURCE, KEEPALIVE_INTERVAL_MS } from '../utils/constants';
 import { MSG, KEEPALIVE_PORT_NAME } from '../utils/types';
 
 (function () {
+  // Unique ID for this page load — allows the service worker to track
+  // multiple simultaneous meetings (one per tab) independently.
+  const sessionId = crypto.randomUUID();
+
   let port: chrome.runtime.Port | null = null;
 
   function connectKeepalive(): void {
     try {
-      port = chrome.runtime.connect(undefined, { name: KEEPALIVE_PORT_NAME });
+      port = chrome.runtime.connect(undefined, { name: `${KEEPALIVE_PORT_NAME}:${sessionId}` });
       port.onDisconnect.addListener(() => {
         port = null;
         setTimeout(connectKeepalive, 1000);
@@ -36,6 +40,9 @@ import { MSG, KEEPALIVE_PORT_NAME } from '../utils/types';
     }
   });
 
+  // Expose sessionId so other content scripts in this tab (floating-popup) can read it
+  document.documentElement.dataset.meetscribeSession = sessionId;
+
   // MAIN world → service worker relay
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
@@ -51,7 +58,7 @@ import { MSG, KEEPALIVE_PORT_NAME } from '../utils/types';
       data.type === MSG.MEETING_CODE
     ) {
       try {
-        chrome.runtime.sendMessage(data).catch(() => {});
+        chrome.runtime.sendMessage({ ...data, sessionId }).catch(() => {});
       } catch { /* extension context invalidated */ }
     }
   });

@@ -9,6 +9,7 @@ import {
   updateOrAddEntry,
   getEntries,
   clearEntries,
+  seedSession,
   getSettings,
   updateSettings,
   restoreFromStorage,
@@ -22,9 +23,6 @@ import {
 import { MEETING_CODE_DEDUP_MS } from '../utils/constants';
 import {
   createMeeting,
-  getCurrentMeeting,
-  getCurrentMeetingId,
-  setCurrentMeetingId,
   addParticipant,
   addTranscriptEntry,
   updateEntryText,
@@ -42,19 +40,56 @@ import {
   resumeMeeting,
 } from '../utils/meeting-store';
 
-// --- State ---
+// --- Per-session state ---
 
-const popupPorts = new Set<chrome.runtime.Port>();
+interface Session {
+  meetingId: string | null;
+  meetingCode: string | null;
+  recentActiveDevices: Array<{ deviceId: string; timestamp: number }>;
+}
+
+const sessions = new Map<string, Session>();
+const tabSessionMap = new Map<number, string>(); // tabId → sessionId
+const keepaliveTimers = new Map<string, ReturnType<typeof setTimeout>>(); // sessionId → disconnect timer
+
+function getOrCreateSession(sessionId: string): Session {
+  let s = sessions.get(sessionId);
+  if (!s) {
+    s = { meetingId: null, meetingCode: null, recentActiveDevices: [] };
+    sessions.set(sessionId, s);
+  }
+  return s;
+}
+
+/** Resolve sessionId from a message (preferred) or from sender's tab ID. */
+function resolveSessionId(
+  message: Record<string, unknown>,
+  sender: chrome.runtime.MessageSender,
+): string | null {
+  if (typeof message.sessionId === 'string') return message.sessionId;
+  const tabId = sender.tab?.id;
+  if (tabId != null) return tabSessionMap.get(tabId) ?? null;
+  return null;
+}
+
+/** Get all meetingIds that are currently live (have an active session). */
+function getLiveMeetingIds(): string[] {
+  const ids = new Set<string>();
+  for (const s of sessions.values()) {
+    if (s.meetingId) ids.add(s.meetingId);
+  }
+  return [...ids];
+}
+
+// --- Global state ---
+
+const popupPorts = new Map<chrome.runtime.Port, string | undefined>(); // port → sessionId
 const DEVICE_MAP_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const deviceMap = new Map<string, { name: string; ts: number }>(); // deviceId → { name, timestamp }
-let currentMeetingCode: string | null = null;
-// Track recently active device IDs for DOM-based speaker name correlation
-const recentActiveDevices: Array<{ deviceId: string; timestamp: number }> = [];
-let keepaliveDisconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const KEEPALIVE_GRACE_MS = 120_000; // 2 minutes grace before ending meeting
 // Debounce device refresh requests
 let deviceRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-const DEVICE_REFRESH_DEBOUNCE_MS = 3_000; // Wait 3s to batch unknown deviceIds before requesting refresh
+const DEVICE_REFRESH_DEBOUNCE_MS = 3_000;
 
 // --- Session state persistence (survives service worker restarts & extension updates) ---
 
@@ -76,11 +111,12 @@ function scheduleSessionPersist(): void {
       }
     }
     chrome.storage.local.set({ deviceMap: persistMap }).catch(() => {});
-    // Volatile session state stays in session storage
-    chrome.storage.session.set({
-      currentMeetingCode,
-      currentMeetingId: getCurrentMeetingId(),
-    }).catch(() => {});
+    // Persist per-session state to session storage
+    const sessionData: Record<string, { meetingId: string | null; meetingCode: string | null }> = {};
+    for (const [sid, s] of sessions) {
+      sessionData[sid] = { meetingId: s.meetingId, meetingCode: s.meetingCode };
+    }
+    chrome.storage.session.set({ sessions: sessionData }).catch(() => {});
   }, 2_000);
 }
 
@@ -100,18 +136,23 @@ async function restoreSessionState(): Promise<void> {
       }
     }
 
-    // Restore volatile session state
-    const session = await chrome.storage.session.get(['currentMeetingCode', 'currentMeetingId']);
-    if (typeof session.currentMeetingCode === 'string') {
-      currentMeetingCode = session.currentMeetingCode;
-    }
-    // Restore currentMeetingId so the live meeting survives service worker restarts.
-    // Only restore if the meeting still exists in the store (already restored by restoreMeetings).
-    if (typeof session.currentMeetingId === 'string' && !getCurrentMeetingId()) {
-      const meeting = getMeeting(session.currentMeetingId);
-      if (meeting && !meeting.endTime) {
-        setCurrentMeetingId(session.currentMeetingId);
-        updateExtensionIcon(true);
+    // Restore per-session state
+    const sessionStorage = await chrome.storage.session.get(['sessions']);
+    if (sessionStorage.sessions && typeof sessionStorage.sessions === 'object') {
+      const stored = sessionStorage.sessions as Record<string, { meetingId: string | null; meetingCode: string | null }>;
+      for (const [sid, data] of Object.entries(stored)) {
+        // Only restore if the meeting still exists and is not ended
+        if (data.meetingId) {
+          const meeting = getMeeting(data.meetingId);
+          if (meeting && !meeting.endTime) {
+            const s = getOrCreateSession(sid);
+            s.meetingId = data.meetingId;
+            s.meetingCode = data.meetingCode;
+            // Seed transcript store from meeting entries for dedup
+            seedSession(sid, meeting.entries);
+            updateExtensionIcon(true);
+          }
+        }
       }
     }
   } catch { /* empty on first load */ }
@@ -123,6 +164,15 @@ restoreFromStorage();
 // Ensure meetings are loaded before restoring session state, so the
 // deviceMap backfill from meeting.participants works reliably.
 const sessionStateReady = restoreMeetings().then(() => restoreSessionState());
+
+// Re-route popup for the active Meet tab on SW startup (popup routing is per-tab
+// and resets when the service worker restarts).
+sessionStateReady.then(async () => {
+  try {
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (activeTab?.id) await updatePopupForTab(activeTab.id, activeTab.url);
+  } catch { /* ignore */ }
+});
 
 // --- Extension icon state ---
 
@@ -172,46 +222,67 @@ chrome.action.onClicked.addListener(async (tab) => {
 // --- Port management ---
 
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name === KEEPALIVE_PORT_NAME) {
-    // Cancel pending disconnect timer — tab reconnected (normal during SW restarts, tab cycling)
-    if (keepaliveDisconnectTimer) {
-      clearTimeout(keepaliveDisconnectTimer);
-      keepaliveDisconnectTimer = null;
+  if (port.name.startsWith(KEEPALIVE_PORT_NAME + ':')) {
+    const sessionId = port.name.slice(KEEPALIVE_PORT_NAME.length + 1);
+    const tabId = port.sender?.tab?.id;
+    if (tabId != null) {
+      tabSessionMap.set(tabId, sessionId);
     }
+
+    // Cancel pending disconnect timer — tab reconnected
+    const existingTimer = keepaliveTimers.get(sessionId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      keepaliveTimers.delete(sessionId);
+    }
+
     port.onMessage.addListener(() => {
       // ping received
     });
+
     port.onDisconnect.addListener(() => {
-      // Don't end immediately — tab may be backgrounded (timers throttled).
-      // Wait for a grace period; if no reconnect, then end.
-      if (currentMeetingCode) {
-        const code = currentMeetingCode;
-        keepaliveDisconnectTimer = setTimeout(() => {
-          keepaliveDisconnectTimer = null;
-          // Only end if no new keepalive reconnected in the meantime
-          if (currentMeetingCode === code) {
-            const meetingId = getCurrentMeetingId();
-            if (meetingId) {
-              endMeeting(meetingId);
-              broadcastToPopup({ type: 'meeting_ended', meetingId });
-              resetMeetingState();
+      const session = sessions.get(sessionId);
+      if (session?.meetingCode) {
+        const code = session.meetingCode;
+        const timer = setTimeout(() => {
+          keepaliveTimers.delete(sessionId);
+          // Only end if the session still has the same code (no reconnect happened)
+          const s = sessions.get(sessionId);
+          if (s && s.meetingCode === code) {
+            if (s.meetingId) {
+              endMeeting(s.meetingId);
+              broadcastToPopup({ type: 'meeting_ended', meetingId: s.meetingId }, sessionId);
             }
-            currentMeetingCode = null;
+            // Clean up session
+            clearEntries(sessionId);
+            sessions.delete(sessionId);
+            if (tabId != null) tabSessionMap.delete(tabId);
             scheduleSessionPersist();
-            updateExtensionIcon(false);
+            // Update icon if no more live sessions
+            if (getLiveMeetingIds().length === 0) {
+              updateExtensionIcon(false);
+            }
           }
         }, KEEPALIVE_GRACE_MS);
+        keepaliveTimers.set(sessionId, timer);
       }
     });
   } else if (port.name === POPUP_PORT_NAME) {
-    popupPorts.add(port);
+    // Floating popup connecting — find its session via tab ID
+    const tabId = port.sender?.tab?.id;
+    const sessionId = tabId != null ? tabSessionMap.get(tabId) : undefined;
+    popupPorts.set(port, sessionId);
 
-    // Send current state
-    const meeting = getCurrentMeeting();
+    // Send current state for this session's meeting
+    const session = sessionId ? sessions.get(sessionId) : undefined;
+    const meeting = session?.meetingId ? getMeeting(session.meetingId) : null;
+    const entries = sessionId ? getEntries(sessionId) : [];
+    // If transcript-store is empty but meeting has entries (e.g. after SW restart), use meeting entries
+    const snapshotEntries = entries.length > 0 ? entries : (meeting?.entries ?? []);
     port.postMessage({
       type: 'meeting_snapshot',
       meeting,
-      entries: getEntries(),
+      entries: snapshotEntries,
     });
 
     port.onDisconnect.addListener(() => {
@@ -220,8 +291,10 @@ chrome.runtime.onConnect.addListener((port) => {
   }
 });
 
-function broadcastToPopup(message: unknown): void {
-  for (const port of popupPorts) {
+function broadcastToPopup(message: unknown, sessionId?: string): void {
+  for (const [port, portSessionId] of popupPorts) {
+    // If sessionId specified, only send to matching ports
+    if (sessionId && portSessionId !== sessionId) continue;
     try {
       port.postMessage(message);
     } catch {
@@ -252,11 +325,6 @@ function requestDeviceRefresh(): void {
   }, DEVICE_REFRESH_DEBOUNCE_MS);
 }
 
-function resetMeetingState(): void {
-  clearEntries();
-  recentActiveDevices.length = 0;
-}
-
 /** Look up display name for a device ID. The deviceMap is persisted to
  *  chrome.storage.local so it survives SW restarts and extension updates. */
 function resolveDeviceName(deviceId: string): string | undefined {
@@ -269,36 +337,39 @@ function resolveDeviceName(deviceId: string): string | undefined {
   return entry.name;
 }
 
-function ensureMeeting(meetingCode?: string): string {
-  const existingId = getCurrentMeetingId();
-  if (existingId) return existingId;
+function ensureMeeting(sessionId: string, meetingCode?: string): string {
+  const session = getOrCreateSession(sessionId);
 
-  const code = meetingCode ?? currentMeetingCode ?? 'unknown';
+  if (session.meetingId) return session.meetingId;
+
+  const code = meetingCode ?? session.meetingCode ?? 'unknown';
 
   // Try to resume a recent meeting with the same code (e.g. after a
-  // service-worker restart where session storage lost the currentMeetingId).
+  // service-worker restart where session storage lost the state).
   const recent = findRecentMeeting(code);
   if (recent) {
     resumeMeeting(recent.id);
-    currentMeetingCode = code;
+    session.meetingId = recent.id;
+    session.meetingCode = code;
+    // Seed transcript store from meeting entries for dedup
+    seedSession(sessionId, recent.entries);
     scheduleSessionPersist();
     updateExtensionIcon(true);
-    broadcastToPopup({ type: 'meeting_started', meeting: recent });
+    broadcastToPopup({ type: 'meeting_started', meeting: recent }, sessionId);
     return recent.id;
   }
 
-  // Clear transcript (but keep deviceMap — it may hold names from the same
-  // RTC session that survive a service-worker restart).
-  clearEntries();
+  // Clear transcript for this session
+  clearEntries(sessionId);
 
   const meeting = createMeeting(code);
-  currentMeetingCode = code;
+  session.meetingId = meeting.id;
+  session.meetingCode = code;
   scheduleSessionPersist();
   updateExtensionIcon(true);
-  broadcastToPopup({ type: 'meeting_started', meeting });
+  broadcastToPopup({ type: 'meeting_started', meeting }, sessionId);
 
-  // Push the stored language preference to Google Meet.  The interceptor
-  // needs time to capture session headers from Meet's API calls, so delay.
+  // Push the stored language preference to Google Meet.
   syncLanguageToMeet();
 
   return meeting.id;
@@ -306,9 +377,8 @@ function ensureMeeting(meetingCode?: string): string {
 
 function syncLanguageToMeet(): void {
   const { language } = getSettings();
-  if (!language || language === 'en') return; // 'en' is Meet's default — no need to push
+  if (!language || language === 'en') return;
 
-  // Delay to give the interceptor time to capture session headers
   setTimeout(async () => {
     try {
       const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
@@ -335,82 +405,81 @@ chrome.runtime.onMessage.addListener(
 
 async function handleMessage(
   message: ExtensionMessage,
-  _sender: chrome.runtime.MessageSender,
+  sender: chrome.runtime.MessageSender,
   sendResponse: (response?: unknown) => void,
 ): Promise<void> {
   // Ensure deviceMap is restored before processing any messages
   await sessionStateReady;
   const settings = getSettings();
 
+  // Resolve sessionId for messages that need per-session routing
+  const msgAny = message as unknown as Record<string, unknown>;
+  const sessionId = resolveSessionId(msgAny, sender);
+
   switch (message.type) {
     case MSG.MEETING_CODE: {
+      if (!sessionId) break;
       const msg = message as unknown as { meetingCode: string };
-      const existingId = getCurrentMeetingId();
-      if (existingId) {
-        const meeting = getCurrentMeeting();
+      const session = getOrCreateSession(sessionId);
 
-        // If the meeting was created without a proper code (e.g. after a SW
-        // restart where captions arrived before MEETING_CODE), just patch it
-        // instead of ending + recreating.
+      if (session.meetingId) {
+        const meeting = getMeeting(session.meetingId);
+
+        // If the meeting was created without a proper code, just patch it
         if (meeting && meeting.meetingCode === 'unknown') {
           const title = findTitleByCode(msg.meetingCode) ?? msg.meetingCode;
-          updateMeeting(existingId, { meetingCode: msg.meetingCode, title });
-          currentMeetingCode = msg.meetingCode;
+          updateMeeting(session.meetingId, { meetingCode: msg.meetingCode, title });
+          session.meetingCode = msg.meetingCode;
           scheduleSessionPersist();
-          broadcastToPopup({ type: 'meeting_started', meeting: getCurrentMeeting() });
+          broadcastToPopup({ type: 'meeting_started', meeting: getMeeting(session.meetingId) }, sessionId);
           syncLanguageToMeet();
           break;
         }
 
-        // End the previous meeting if the code changed OR if this is a fresh
-        // page load (the same code arriving again after the dedup window means
-        // the user left and rejoined / joined a new session in the same room).
-        // If currentMeetingCode is null (e.g. after SW restart with lost session
-        // storage), check the meeting's own code to avoid a false "code changed".
-        const effectiveCurrentCode = currentMeetingCode ?? meeting?.meetingCode;
+        // End the previous meeting if the code changed or if this is a fresh page load
+        const effectiveCurrentCode = session.meetingCode ?? meeting?.meetingCode;
         const codeChanged = !effectiveCurrentCode || effectiveCurrentCode !== msg.meetingCode;
         const isNewPageLoad = !meeting || (Date.now() - meeting.startTime > MEETING_CODE_DEDUP_MS);
         if (codeChanged || isNewPageLoad) {
-          endMeeting(existingId);
-          broadcastToPopup({ type: 'meeting_ended', meetingId: existingId });
+          endMeeting(session.meetingId);
+          broadcastToPopup({ type: 'meeting_ended', meetingId: session.meetingId }, sessionId);
+          session.meetingId = null;
           if (codeChanged) {
-            // Full reset — new meeting room gets fresh device names
-            resetMeetingState();
+            clearEntries(sessionId);
+            session.recentActiveDevices.length = 0;
           } else {
-            // Same meeting code (rejoin / page reload) — keep deviceMap so
-            // participant names survive until fresh RTC device info arrives.
-            clearEntries();
-            recentActiveDevices.length = 0;
+            clearEntries(sessionId);
+            session.recentActiveDevices.length = 0;
           }
         }
       }
-      currentMeetingCode = msg.meetingCode;
+      session.meetingCode = msg.meetingCode;
       scheduleSessionPersist();
-      // Create meeting immediately so it appears in the list before anyone speaks
-      ensureMeeting(msg.meetingCode);
-      // Fresh page load — push the stored language preference to the new interceptor
+      ensureMeeting(sessionId, msg.meetingCode);
       syncLanguageToMeet();
       break;
     }
 
     case MSG.CAPTION_SPEAKER_NAME: {
-      // Speaker name extracted from native Google Meet caption DOM
+      if (!sessionId) break;
+      const session = sessions.get(sessionId);
+      if (!session) break;
+
       const nameMsg = message as unknown as { speakerName: string };
       if (!nameMsg.speakerName) break;
 
       // Find unnamed devices active within the last 10 seconds
       const now = Date.now();
       const unnamedDevices: Array<{ deviceId: string; timestamp: number }> = [];
-      for (const entry of recentActiveDevices) {
+      for (const entry of session.recentActiveDevices) {
         if (now - entry.timestamp > 10000) break;
         if (!resolveDeviceName(entry.deviceId) || resolveDeviceName(entry.deviceId) === entry.deviceId) {
           unnamedDevices.push(entry);
         }
       }
 
-      console.debug('[MeetTranscript] Caption speaker name from DOM:', nameMsg.speakerName, '| unnamed devices in window:', unnamedDevices.length, '| recent active devices:', recentActiveDevices.length);
+      console.debug('[MeetTranscript] Caption speaker name from DOM:', nameMsg.speakerName, '| unnamed devices in window:', unnamedDevices.length, '| recent active devices:', session.recentActiveDevices.length);
 
-      // Only assign if exactly one unnamed device — avoids mismatching
       if (unnamedDevices.length !== 1) break;
 
       const deviceId = unnamedDevices[0].deviceId;
@@ -418,30 +487,31 @@ async function handleMessage(
       deviceMap.set(deviceId, { name: deviceName, ts: Date.now() });
       scheduleDeviceMapPersist();
 
-      // Retroactively fix entries (by deviceId to also catch placeholder names)
-      const updatedEntries = renameSpeakerByDeviceId(deviceId, deviceName);
+      // Retroactively fix entries
+      const updatedEntries = renameSpeakerByDeviceId(sessionId, deviceId, deviceName);
       for (const updated of updatedEntries) {
-        const meetingId = getCurrentMeetingId();
-        if (meetingId) {
-          updateEntryText(meetingId, updated.id, updated.text);
-          updateEntrySpeaker(meetingId, updated.id, deviceName);
+        if (session.meetingId) {
+          updateEntryText(session.meetingId, updated.id, updated.text);
+          updateEntrySpeaker(session.meetingId, updated.id, deviceName);
         }
-        broadcastToPopup({ type: 'entry_updated', entry: updated });
+        broadcastToPopup({ type: 'entry_updated', entry: updated }, sessionId);
       }
 
-      const meetingId = getCurrentMeetingId();
-      if (meetingId) {
-        addParticipant(meetingId, deviceId, deviceName);
+      if (session.meetingId) {
+        addParticipant(session.meetingId, deviceId, deviceName);
         broadcastToPopup({
           type: 'participant_update',
           deviceId,
           deviceName,
-        });
+        }, sessionId);
       }
       break;
     }
 
     case MSG.RTC_DEVICE_INFO: {
+      if (!sessionId) break;
+      const session = sessions.get(sessionId);
+
       const devMsg = message as unknown as { deviceId: string; deviceName: string };
       if (devMsg.deviceId && devMsg.deviceName) {
         const oldName = resolveDeviceName(devMsg.deviceId);
@@ -451,39 +521,38 @@ async function handleMessage(
 
         // Retroactively fix entries that used a placeholder or raw deviceId as speaker
         if (!oldName || oldName === devMsg.deviceId) {
-          const updatedEntries = renameSpeakerByDeviceId(devMsg.deviceId, devMsg.deviceName);
+          const updatedEntries = renameSpeakerByDeviceId(sessionId, devMsg.deviceId, devMsg.deviceName);
           for (const entry of updatedEntries) {
-            const meetingId = getCurrentMeetingId();
-            if (meetingId) {
-              updateEntryText(meetingId, entry.id, entry.text);
-              updateEntrySpeaker(meetingId, entry.id, devMsg.deviceName);
+            if (session?.meetingId) {
+              updateEntryText(session.meetingId, entry.id, entry.text);
+              updateEntrySpeaker(session.meetingId, entry.id, devMsg.deviceName);
             }
-            broadcastToPopup({ type: 'entry_updated', entry });
+            broadcastToPopup({ type: 'entry_updated', entry }, sessionId);
           }
         }
 
-        const meetingId = getCurrentMeetingId();
-        if (meetingId) {
-          addParticipant(meetingId, devMsg.deviceId, devMsg.deviceName);
+        if (session?.meetingId) {
+          addParticipant(session.meetingId, devMsg.deviceId, devMsg.deviceName);
           broadcastToPopup({
             type: 'participant_update',
             deviceId: devMsg.deviceId,
             deviceName: devMsg.deviceName,
-          });
+          }, sessionId);
         }
       }
       break;
     }
 
     case MSG.RTC_CAPTION_DATA: {
-      if (!settings.enabled) break;
+      if (!settings.enabled || !sessionId) break;
 
       const rtcMsg = message as unknown as {
         captions: Array<{ deviceId: string; messageId: string; messageVersion: number; langId: number; text: string }>;
         timestamp: number;
       };
 
-      const meetingId = ensureMeeting();
+      const meetingId = ensureMeeting(sessionId);
+      const session = sessions.get(sessionId)!;
 
       let hasUnknownDevices = false;
       for (const caption of rtcMsg.captions ?? []) {
@@ -491,9 +560,8 @@ async function handleMessage(
 
         // Track this device as recently active (for DOM speaker name correlation)
         if (!resolveDeviceName(caption.deviceId)) {
-          recentActiveDevices.unshift({ deviceId: caption.deviceId, timestamp: Date.now() });
-          // Keep only last 10 entries
-          if (recentActiveDevices.length > 10) recentActiveDevices.length = 10;
+          session.recentActiveDevices.unshift({ deviceId: caption.deviceId, timestamp: Date.now() });
+          if (session.recentActiveDevices.length > 10) session.recentActiveDevices.length = 10;
           hasUnknownDevices = true;
           console.debug('[MeetTranscript] Unknown device in caption:', caption.deviceId, '| deviceMap size:', deviceMap.size, '| known devices:', [...deviceMap.keys()].join(', '));
         }
@@ -501,6 +569,7 @@ async function handleMessage(
         const speaker = resolveDeviceName(caption.deviceId) ?? caption.deviceId;
 
         const result = updateOrAddEntry(
+          sessionId,
           caption.text,
           speaker,
           caption.messageId,
@@ -518,11 +587,10 @@ async function handleMessage(
           broadcastToPopup({
             type: result.isUpdate ? 'entry_updated' : 'new_entry',
             entry: result.entry,
-          });
+          }, sessionId);
         }
       }
 
-      // If we saw unknown device IDs, proactively refresh device info
       if (hasUnknownDevices) {
         requestDeviceRefresh();
       }
@@ -530,15 +598,15 @@ async function handleMessage(
     }
 
     case MSG.RTC_CHAT_MESSAGE: {
-      if (!settings.enabled) break;
+      if (!settings.enabled || !sessionId) break;
 
       const chatMsg = message as unknown as { deviceId: string; messageId: string; text: string; timestamp: number };
       if (!chatMsg.text) break;
 
       const chatSpeaker = resolveDeviceName(chatMsg.deviceId) ?? chatMsg.deviceId;
-      const meetingId = ensureMeeting();
+      const meetingId = ensureMeeting(sessionId);
 
-      const result = updateOrAddEntry(`[Chat] ${chatMsg.text}`, chatSpeaker);
+      const result = updateOrAddEntry(sessionId, `[Chat] ${chatMsg.text}`, chatSpeaker);
       if (result) {
         if (result.isUpdate) {
           updateEntryText(meetingId, result.entry.id, result.entry.text);
@@ -548,20 +616,24 @@ async function handleMessage(
         broadcastToPopup({
           type: result.isUpdate ? 'entry_updated' : 'new_entry',
           entry: result.entry,
-        });
+        }, sessionId);
       }
       break;
     }
 
     case MSG.GET_TRANSCRIPT: {
-      sendResponse({ entries: getEntries() });
+      if (sessionId) {
+        sendResponse({ entries: getEntries(sessionId) });
+      } else {
+        sendResponse({ entries: [] });
+      }
       return;
     }
 
     case MSG.EXPORT_TRANSCRIPT: {
       const payload = message.payload as { format?: string; title?: string };
       const format = payload?.format ?? 'txt';
-      const entries = getEntries();
+      const entries = sessionId ? getEntries(sessionId) : [];
       const exported = formatExport(entries, format, payload?.title);
       sendResponse({ content: exported, format });
       return;
@@ -579,8 +651,10 @@ async function handleMessage(
     }
 
     case MSG.CLEAR_TRANSCRIPT: {
-      clearEntries();
-      broadcastToPopup({ type: 'transcript_cleared' });
+      if (sessionId) {
+        clearEntries(sessionId);
+        broadcastToPopup({ type: 'transcript_cleared' }, sessionId);
+      }
       sendResponse({ ok: true });
       return;
     }
@@ -612,7 +686,7 @@ async function handleMessage(
     }
 
     case MSG.GET_MEETINGS: {
-      sendResponse({ meetings: getMeetings(), currentMeetingId: getCurrentMeetingId() });
+      sendResponse({ meetings: getMeetings(), liveMeetingIds: getLiveMeetingIds() });
       return;
     }
 
@@ -625,7 +699,9 @@ async function handleMessage(
 
     case MSG.DELETE_MEETING: {
       const deleteMsg = message.payload as { id: string };
-      if (deleteMsg.id === getCurrentMeetingId()) {
+      // Prevent deleting a meeting that's currently live in any session
+      const liveIds = getLiveMeetingIds();
+      if (liveIds.includes(deleteMsg.id)) {
         sendResponse({ ok: false, error: 'Cannot delete a live meeting' });
         return;
       }
@@ -653,7 +729,9 @@ async function handleMessage(
     }
 
     case MSG.GET_CURRENT_MEETING: {
-      const current = getCurrentMeeting();
+      // Return the meeting for the sender's session (tab)
+      const session = sessionId ? sessions.get(sessionId) : undefined;
+      const current = session?.meetingId ? getMeeting(session.meetingId) : null;
       sendResponse({ meeting: current });
       return;
     }

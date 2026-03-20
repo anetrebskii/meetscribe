@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<!--
+  MeetScribe — Demo page for Chrome Web Store screenshots.
+  Open this file in a browser (no extension needed).
+
+  SWITCHING VIEWS:
+    • List view  → set DEMO_VIEW = 'list'   below
+    • Detail view → set DEMO_VIEW = 'detail' below
+
+  Then open in a browser at 340 × 500 px (matches the real popup).
+  Use browser DevTools device emulation or the CSS below to lock the size.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>MeetScribe – Demo</title>
+  <style>
+    /* ── Lock to popup dimensions for easy screenshotting ── */
+    html, body {
+      width: 340px;
+      height: 500px;
+      overflow: hidden;
+    }
+
+    /* ── Popup styles (mirrored from popup.html) ── */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #202124;
+      color: #e8eaed;
+      font-family: 'Google Sans', Roboto, Arial, sans-serif;
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+    }
+    .header {
+      padding: 10px 16px;
+      font-weight: 500;
+      font-size: 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .header-title { flex: 1; }
+    .btn-back {
+      background: none;
+      border: none;
+      color: #8ab4f8;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 2px 0;
+    }
+    .content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+    .content::-webkit-scrollbar { width: 4px; }
+    .content::-webkit-scrollbar-track { background: transparent; }
+    .content::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+
+    /* Meeting list */
+    .meeting-item {
+      padding: 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.15s;
+      margin-bottom: 4px;
+    }
+    .meeting-item:hover { background: rgba(255,255,255,0.06); }
+    .meeting-item.current {
+      background: rgba(138,180,248,0.08);
+      border: 1px solid rgba(138,180,248,0.2);
+    }
+    .meeting-item-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .meeting-item-title {
+      font-weight: 500;
+      color: #e8eaed;
+      flex: 1;
+    }
+    .meeting-item-actions {
+      display: flex;
+      gap: 4px;
+      margin-left: auto;
+      flex-shrink: 0;
+      opacity: 0;
+    }
+    .meeting-item:hover .meeting-item-actions { opacity: 1; }
+    .meeting-item.current .meeting-item-actions { opacity: 1; }
+    .meeting-action {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 4px;
+      color: #9aa0a6;
+      cursor: pointer;
+      font-size: 12px;
+      width: 24px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .meeting-item-meta {
+      font-size: 11px;
+      color: #9aa0a6;
+      margin-top: 4px;
+    }
+    .meeting-item-participants {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 4px;
+    }
+    .participant-tag {
+      background: rgba(138,180,248,0.12);
+      color: #8ab4f8;
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 8px;
+      white-space: nowrap;
+    }
+
+    /* Detail / transcription view */
+    .detail-entries .entry {
+      margin-bottom: 8px;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+    .detail-entries .entry:last-child { border-bottom: none; }
+    .speaker { font-weight: 600; color: #8ab4f8; font-size: 12px; margin-right: 6px; }
+    .time { color: #9aa0a6; font-size: 11px; }
+    .text { margin-top: 2px; line-height: 1.4; color: #dadce0; word-break: break-word; }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 12px;
+      font-size: 11px;
+      color: #9aa0a6;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════
+     DEMO VIEW SWITCHER
+     Comment/uncomment the section you want to see.
+     ═══════════════════════════════════════════════ -->
+
+<!-- ──────────────────────────────────────────────
+     VIEW 1 – Meeting List
+     ────────────────────────────────────────────── -->
+<div id="view-list">
+  <div class="header">
+    <span class="header-title">MeetScribe</span>
+  </div>
+  <div class="content">
+
+    <!-- Live meeting -->
+    <div class="meeting-item current">
+      <div class="meeting-item-header">
+        <span class="meeting-item-title">Q2 Product Planning</span>
+        <div class="meeting-item-actions">
+          <button class="meeting-action" title="Rename">✎</button>
+          <button class="meeting-action" title="Copy as Markdown">⌘</button>
+          <button class="meeting-action" title="Export">↓</button>
+          <button class="meeting-action" title="Delete">✕</button>
+        </div>
+      </div>
+      <div class="meeting-item-meta">Mar 3, 2026 · 10:00 AM · 23 min (live)</div>
+      <div class="meeting-item-participants">
+        <span class="participant-tag">abc-defg-hij</span>
+        <span class="participant-tag">Sarah Chen</span>
+        <span class="participant-tag">Marcus Reid</span>
+        <span class="participant-tag">Priya Sharma</span>
+      </div>
+    </div>
+
+    <!-- Past meetings -->
+    <div class="meeting-item">
+      <div class="meeting-item-header">
+        <span class="meeting-item-title">Design Review – Onboarding Flow</span>
+        <div class="meeting-item-actions">
+          <button class="meeting-action" title="Rename">✎</button>
+          <button class="meeting-action" title="Copy as Markdown">⌘</button>
+          <button class="meeting-action" title="Export">↓</button>
+          <button class="meeting-action" title="Delete">✕</button>
+        </div>
+      </div>
+      <div class="meeting-item-meta">Mar 3, 2026 · 9:00 AM · 47 min</div>
+      <div class="meeting-item-participants">
+        <span class="participant-tag">Lena Volkov</span>
+        <span class="participant-tag">James Okafor</span>
+      </div>
+    </div>
+
+    <div class="meeting-item">
+      <div class="meeting-item-header">
+        <span class="meeting-item-title">Engineering Sync</span>
+        <div class="meeting-item-actions">
+          <button class="meeting-action" title="Rename">✎</button>
+          <button class="meeting-action" title="Copy as Markdown">⌘</button>
+          <button class="meeting-action" title="Export">↓</button>
+          <button class="meeting-action" title="Delete">✕</button>
+        </div>
+      </div>
+      <div class="meeting-item-meta">Mar 2, 2026 · 4:00 PM · 31 min</div>
+      <div class="meeting-item-participants">
+        <span class="participant-tag">Marcus Reid</span>
+        <span class="participant-tag">Tomasz Wiśniewski</span>
+        <span class="participant-tag">Sarah Chen</span>
+      </div>
+    </div>
+
+    <div class="meeting-item">
+      <div class="meeting-item-header">
+        <span class="meeting-item-title">Investor Update – Series B</span>
+        <div class="meeting-item-actions">
+          <button class="meeting-action" title="Rename">✎</button>
+          <button class="meeting-action" title="Copy as Markdown">⌘</button>
+          <button class="meeting-action" title="Export">↓</button>
+          <button class="meeting-action" title="Delete">✕</button>
+        </div>
+      </div>
+      <div class="meeting-item-meta">Feb 28, 2026 · 2:00 PM · 58 min</div>
+      <div class="meeting-item-participants">
+        <span class="participant-tag">Priya Sharma</span>
+        <span class="participant-tag">Lena Volkov</span>
+        <span class="participant-tag">David Park</span>
+      </div>
+    </div>
+
+    <div class="meeting-item">
+      <div class="meeting-item-header">
+        <span class="meeting-item-title">1:1 with Sarah</span>
+        <div class="meeting-item-actions">
+          <button class="meeting-action" title="Rename">✎</button>
+          <button class="meeting-action" title="Copy as Markdown">⌘</button>
+          <button class="meeting-action" title="Export">↓</button>
+          <button class="meeting-action" title="Delete">✕</button>
+        </div>
+      </div>
+      <div class="meeting-item-meta">Feb 27, 2026 · 11:00 AM · 25 min</div>
+      <div class="meeting-item-participants">
+        <span class="participant-tag">Sarah Chen</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ──────────────────────────────────────────────
+     VIEW 2 – Transcription Detail
+     To show this view instead:
+       1. Add style="display:none" to #view-list above
+       2. Remove style="display:none" from #view-detail below
+     ────────────────────────────────────────────── -->
+<div id="view-detail" style="display:none; flex-direction:column; height:100%;">
+  <div class="header">
+    <button class="btn-back">← Back</button>
+    <span class="header-title">Q2 Product Planning</span>
+  </div>
+  <div class="content">
+    <div class="detail-entries">
+
+      <div class="entry">
+        <span class="speaker">Sarah Chen</span><span class="time">10:03 AM</span>
+        <div class="text">Alright, let's get started. Today we're planning the Q2 roadmap — main focus is the new onboarding flow and the analytics dashboard.</div>
+      </div>
+
+      <div class="entry">
+        <span class="speaker">Marcus Reid</span><span class="time">10:04 AM</span>
+        <div class="text">I've pushed the initial designs for onboarding. Main change is we're moving the account setup to after the first "aha moment" instead of right at signup.</div>
+      </div>
+
+      <div class="entry">
+        <span class="speaker">Priya Sharma</span><span class="time">10:06 AM</span>
+        <div class="text">That matches what we saw in user research — people dropped off when they had to fill in company details before seeing any value.</div>
+      </div>
+
+      <div class="entry">
+        <span class="speaker">Sarah Chen</span><span class="time">10:08 AM</span>
+        <div class="text">Agreed. Marcus, can you share the timeline? How long until we have a testable prototype?</div>
+      </div>
+
+      <div class="entry">
+        <span class="speaker">Marcus Reid</span><span class="time">10:09 AM</span>
+        <div class="text">End of next week for a clickable prototype. Engineering would need another two weeks on top of that for a functional build.</div>
+      </div>
+
+      <div class="entry">
+        <span class="speaker">Priya Sharma</span><span class="time">10:11 AM</span>
+        <div class="text">That works. We should run a quick usability study as soon as the prototype is ready — I can set up 5 sessions within two days of getting access.</div>
+      </div>
+
+      <div class="entry">
+        <span class="speaker">Sarah Chen</span><span class="time">10:13 AM</span>
+        <div class="text">Perfect. Let's also make sure we're tracking activation rate as the primary metric — specifically, users who complete their first project within 24 hours.</div>
+      </div>
+
+      <div class="entry">
+        <span class="speaker">Marcus Reid</span><span class="time">10:15 AM</span>
+        <div class="text">On the analytics dashboard — are we doing a full rebuild or iterating on what we have? The current one is pretty slow past 10k events.</div>
+      </div>
+
+      <div class="entry">
+        <span class="speaker">Priya Sharma</span><span class="time">10:17 AM</span>
+        <div class="text">We should rebuild the backend queries at minimum. The UI can stay for now — a full redesign is a Q3 thing.</div>
+      </div>
+
+    </div>
+  </div>
+  <div class="footer">
+    <span>9 entries</span>
+  </div>
+</div>
+
+</body>
+</html>

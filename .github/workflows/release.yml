@@ -73,3 +73,43 @@ jobs:
           name: MeetScribe ${{ needs.version.outputs.version }}
           generate_release_notes: true
           files: release/meetscribe-${{ needs.version.outputs.version }}.zip
+
+      - name: Upload to Chrome Web Store
+        run: |
+          # Get access token
+          ACCESS_TOKEN=$(curl -s -X POST "https://oauth2.googleapis.com/token" \
+            -d "client_id=${{ secrets.CWS_CLIENT_ID }}" \
+            -d "client_secret=${{ secrets.CWS_CLIENT_SECRET }}" \
+            -d "refresh_token=${{ secrets.CWS_REFRESH_TOKEN }}" \
+            -d "grant_type=refresh_token" | jq -r '.access_token')
+
+          # Upload zip
+          curl -s -X PUT \
+            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/${{ secrets.CWS_EXTENSION_ID }}" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "x-goog-api-version: 2" \
+            -T "release/meetscribe-${{ needs.version.outputs.version }}.zip" \
+            | tee response.json
+
+          # Check upload succeeded
+          STATUS=$(jq -r '.uploadState' response.json)
+          if [ "$STATUS" != "SUCCESS" ]; then
+            echo "Upload failed: $(cat response.json)"
+            exit 1
+          fi
+
+          # Publish
+          curl -s -X POST \
+            "https://www.googleapis.com/chromewebstore/v1.1/items/${{ secrets.CWS_EXTENSION_ID }}/publish" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "x-goog-api-version: 2" \
+            -H "Content-Length: 0" \
+            | tee publish.json
+
+          PUBLISH_STATUS=$(jq -r '.status[0]' publish.json)
+          if [ "$PUBLISH_STATUS" != "OK" ]; then
+            echo "Publish failed: $(cat publish.json)"
+            exit 1
+          fi
+
+          echo "Published v${{ needs.version.outputs.version }} to Chrome Web Store"

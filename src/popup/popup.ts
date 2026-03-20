@@ -46,7 +46,7 @@ import { MSG, type Meeting, type TranscriptEntry } from '../utils/types';
     try {
       const response = await chrome.runtime.sendMessage({ type: MSG.GET_MEETINGS });
       const meetings = (response?.meetings ?? []) as Omit<Meeting, 'entries'>[];
-      const liveMeetingId = response?.currentMeetingId as string | null;
+      const liveMeetingIds = (response?.liveMeetingIds ?? []) as string[];
 
       if (meetings.length === 0) {
         contentEl.innerHTML = '<div class="empty-state">No meetings yet</div>';
@@ -55,7 +55,7 @@ import { MSG, type Meeting, type TranscriptEntry } from '../utils/types';
 
       contentEl.innerHTML = '';
       for (const m of meetings) {
-        contentEl.appendChild(createItem(m, m.id === liveMeetingId));
+        contentEl.appendChild(createItem(m, liveMeetingIds.includes(m.id)));
       }
     } catch {
       contentEl.innerHTML = '<div class="empty-state">Failed to load meetings</div>';

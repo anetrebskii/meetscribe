@@ -4,7 +4,6 @@ import { STORAGE_DEBOUNCE_MS, MEETING_RESUME_WINDOW_MS } from './constants';
 const STORAGE_KEY = 'meetings';
 
 let meetings: Map<string, Meeting> = new Map();
-let currentMeetingId: string | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let idCounter = 0;
 
@@ -49,22 +48,8 @@ export function createMeeting(meetingCode: string): Meeting {
     entries: [],
   };
   meetings.set(meeting.id, meeting);
-  currentMeetingId = meeting.id;
   schedulePersist();
   return meeting;
-}
-
-export function getCurrentMeeting(): Meeting | null {
-  if (!currentMeetingId) return null;
-  return meetings.get(currentMeetingId) ?? null;
-}
-
-export function getCurrentMeetingId(): string | null {
-  return currentMeetingId;
-}
-
-export function setCurrentMeetingId(id: string | null): void {
-  currentMeetingId = id;
 }
 
 export function updateMeeting(id: string, partial: Partial<Meeting>): Meeting | null {
@@ -114,7 +99,6 @@ export function endMeeting(id: string): void {
   const meeting = meetings.get(id);
   if (!meeting) return;
   meeting.endTime = Date.now();
-  if (currentMeetingId === id) currentMeetingId = null;
   schedulePersist();
 }
 
@@ -154,7 +138,6 @@ export function resumeMeeting(id: string): Meeting | null {
   const meeting = meetings.get(id);
   if (!meeting) return null;
   meeting.endTime = null;
-  currentMeetingId = id;
   schedulePersist();
   return meeting;
 }
