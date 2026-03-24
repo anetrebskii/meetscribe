@@ -15,6 +15,32 @@ import { LANGUAGE_CODES } from '../utils/constants';
   let participantCount = 0;
   let isMinimized = false;
   let isHidden = true; // Start hidden, auto-show when in a real meeting
+  let contextInvalidated = false;
+
+  /** Detect if the extension context has been invalidated (extension updated/reloaded). */
+  function isContextInvalidated(): boolean {
+    if (contextInvalidated) return true;
+    try {
+      // Accessing chrome.runtime.id throws if context is invalidated
+      void chrome.runtime.id;
+      return false;
+    } catch {
+      contextInvalidated = true;
+      return true;
+    }
+  }
+
+  /** Show a banner in the popup telling the user to refresh. */
+  function showRefreshBanner(): void {
+    const existing = container?.querySelector('.refresh-banner');
+    if (existing) return;
+    const banner = document.createElement('div');
+    banner.className = 'refresh-banner';
+    banner.textContent = 'Extension updated — refresh the page to resume transcription';
+    banner.style.cssText = 'background:#b71c1c;color:#fff;padding:8px 12px;font-size:12px;text-align:center;cursor:pointer;';
+    banner.addEventListener('click', () => location.reload());
+    container?.prepend(banner);
+  }
 
 
   let isDragging = false;
@@ -876,8 +902,16 @@ import { LANGUAGE_CODES } from '../utils/constants';
 
   function connectPort(): void {
     if (port) return;
+    if (isContextInvalidated()) {
+      showRefreshBanner();
+      return;
+    }
     try {
-      port = chrome.runtime.connect(undefined, { name: POPUP_PORT_NAME });
+      // Include sessionId in port name so the service worker can route messages
+      // even if the keepalive port hasn't reconnected yet (race after SW restart)
+      const sessionId = document.documentElement.dataset.meetscribeSession;
+      const portName = sessionId ? `${POPUP_PORT_NAME}:${sessionId}` : POPUP_PORT_NAME;
+      port = chrome.runtime.connect(undefined, { name: portName });
 
       port.onMessage.addListener((message) => {
         switch (message.type) {
@@ -945,10 +979,18 @@ import { LANGUAGE_CODES } from '../utils/constants';
 
       port.onDisconnect.addListener(() => {
         port = null;
-        setTimeout(connectPort, 2000);
+        if (isContextInvalidated()) {
+          showRefreshBanner();
+        } else {
+          setTimeout(connectPort, 2000);
+        }
       });
     } catch {
-      setTimeout(connectPort, 5000);
+      if (isContextInvalidated()) {
+        showRefreshBanner();
+      } else {
+        setTimeout(connectPort, 5000);
+      }
     }
   }
 
@@ -982,6 +1024,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
   }
 
   function savePosition(): void {
+    if (isContextInvalidated()) return;
     chrome.storage.local.set({
       [STORAGE_POS_KEY]: {
         left: host.style.left,
@@ -993,6 +1036,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
   }
 
   function saveSize(): void {
+    if (isContextInvalidated()) return;
     chrome.storage.local.set({
       [STORAGE_SIZE_KEY]: { width: popupWidth, height: popupHeight },
     }).catch(() => {});

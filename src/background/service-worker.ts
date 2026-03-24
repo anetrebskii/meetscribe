@@ -90,6 +90,10 @@ const KEEPALIVE_GRACE_MS = 120_000; // 2 minutes grace before ending meeting
 // Debounce device refresh requests
 let deviceRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 const DEVICE_REFRESH_DEBOUNCE_MS = 3_000;
+// Track last caption data time per session to detect stalled transcription
+const lastCaptionTime = new Map<string, number>();
+const CAPTION_STALL_MS = 30_000; // 30s without captions triggers retry
+const captionStallTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 // --- Session state persistence (survives service worker restarts & extension updates) ---
 
@@ -256,6 +260,9 @@ chrome.runtime.onConnect.addListener((port) => {
             // Clean up session
             clearEntries(sessionId);
             sessions.delete(sessionId);
+            lastCaptionTime.delete(sessionId);
+            const stallTimer = captionStallTimers.get(sessionId);
+            if (stallTimer) { clearTimeout(stallTimer); captionStallTimers.delete(sessionId); }
             if (tabId != null) tabSessionMap.delete(tabId);
             scheduleSessionPersist();
             // Update icon if no more live sessions
@@ -267,10 +274,11 @@ chrome.runtime.onConnect.addListener((port) => {
         keepaliveTimers.set(sessionId, timer);
       }
     });
-  } else if (port.name === POPUP_PORT_NAME) {
-    // Floating popup connecting — find its session via tab ID
+  } else if (port.name === POPUP_PORT_NAME || port.name.startsWith(POPUP_PORT_NAME + ':')) {
+    // Floating popup connecting — prefer sessionId from port name, fall back to tab lookup
+    const portSessionId = port.name.includes(':') ? port.name.slice(POPUP_PORT_NAME.length + 1) : undefined;
     const tabId = port.sender?.tab?.id;
-    const sessionId = tabId != null ? tabSessionMap.get(tabId) : undefined;
+    const sessionId = portSessionId || (tabId != null ? tabSessionMap.get(tabId) : undefined);
     popupPorts.set(port, sessionId);
 
     // Send current state for this session's meeting
@@ -372,7 +380,36 @@ function ensureMeeting(sessionId: string, meetingCode?: string): string {
   // Push the stored language preference to Google Meet.
   syncLanguageToMeet();
 
+  // Start monitoring for caption data — if none arrives, ask content script to retry enabling captions
+  scheduleCaptionStallCheck(sessionId);
+
   return meeting.id;
+}
+
+function scheduleCaptionStallCheck(sessionId: string): void {
+  // Clear any existing timer for this session
+  const existing = captionStallTimers.get(sessionId);
+  if (existing) clearTimeout(existing);
+
+  const timer = setTimeout(async () => {
+    captionStallTimers.delete(sessionId);
+    const session = sessions.get(sessionId);
+    if (!session?.meetingId) return; // meeting ended
+
+    const lastTime = lastCaptionTime.get(sessionId) ?? 0;
+    if (lastTime > 0) return; // we've received caption data, all good
+
+    console.debug('[MeetTranscript] No caption data received for session', sessionId, '— requesting caption retry');
+    try {
+      const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+      for (const tab of tabs) {
+        if (tab.id) {
+          chrome.tabs.sendMessage(tab.id, { type: MSG.RETRY_CAPTIONS }).catch(() => {});
+        }
+      }
+    } catch { /* silent */ }
+  }, CAPTION_STALL_MS);
+  captionStallTimers.set(sessionId, timer);
 }
 
 function syncLanguageToMeet(): void {
@@ -550,6 +587,9 @@ async function handleMessage(
         captions: Array<{ deviceId: string; messageId: string; messageVersion: number; langId: number; text: string }>;
         timestamp: number;
       };
+
+      // Track that we're receiving caption data (used by stall detection)
+      lastCaptionTime.set(sessionId, Date.now());
 
       const meetingId = ensureMeeting(sessionId);
       const session = sessions.get(sessionId)!;

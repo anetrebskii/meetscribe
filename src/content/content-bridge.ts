@@ -7,26 +7,44 @@ import { MSG, KEEPALIVE_PORT_NAME } from '../utils/types';
   const sessionId = crypto.randomUUID();
 
   let port: chrome.runtime.Port | null = null;
+  let contextInvalidated = false;
+
+  function isContextInvalidated(): boolean {
+    if (contextInvalidated) return true;
+    try {
+      void chrome.runtime.id;
+      return false;
+    } catch {
+      contextInvalidated = true;
+      return true;
+    }
+  }
 
   function connectKeepalive(): void {
+    if (isContextInvalidated()) return;
     try {
       port = chrome.runtime.connect(undefined, { name: `${KEEPALIVE_PORT_NAME}:${sessionId}` });
       port.onDisconnect.addListener(() => {
         port = null;
-        setTimeout(connectKeepalive, 1000);
+        if (!isContextInvalidated()) {
+          setTimeout(connectKeepalive, 1000);
+        }
       });
     } catch {
-      setTimeout(connectKeepalive, 5000);
+      if (!isContextInvalidated()) {
+        setTimeout(connectKeepalive, 5000);
+      }
     }
   }
 
   setInterval(() => {
+    if (isContextInvalidated()) return;
     if (port) {
       try {
         port.postMessage({ type: 'ping' });
       } catch {
         port = null;
-        connectKeepalive();
+        if (!isContextInvalidated()) connectKeepalive();
       }
     }
   }, KEEPALIVE_INTERVAL_MS);
@@ -35,7 +53,7 @@ import { MSG, KEEPALIVE_PORT_NAME } from '../utils/types';
 
   // Reconnect immediately when tab regains focus (timers throttled in background)
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && !port) {
+    if (!document.hidden && !port && !isContextInvalidated()) {
       connectKeepalive();
     }
   });
@@ -57,6 +75,7 @@ import { MSG, KEEPALIVE_PORT_NAME } from '../utils/types';
       data.type === MSG.INTERCEPTOR_READY ||
       data.type === MSG.MEETING_CODE
     ) {
+      if (isContextInvalidated()) return;
       try {
         chrome.runtime.sendMessage({ ...data, sessionId }).catch(() => {});
       } catch { /* extension context invalidated */ }
@@ -76,6 +95,8 @@ import { MSG, KEEPALIVE_PORT_NAME } from '../utils/types';
         source: MESSAGE_SOURCE,
         type: MSG.REFRESH_DEVICES,
       }, '*');
+    } else if (message.type === MSG.RETRY_CAPTIONS) {
+      // Handled by caption-observer directly (same ISOLATED world)
     }
   });
 })();

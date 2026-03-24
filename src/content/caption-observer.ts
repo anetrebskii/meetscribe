@@ -1,7 +1,21 @@
 (function () {
   const LOG_PREFIX = '[MeetTranscript:Captions]';
   const MSG_CAPTION_SPEAKER_NAME = 'caption_speaker_name';
+  const MSG_RETRY_CAPTIONS = 'retry_captions';
   let captionAutoEnabled = false;
+  let participantScannerStarted = false;
+  let contextInvalidated = false;
+
+  function isContextInvalidated(): boolean {
+    if (contextInvalidated) return true;
+    try {
+      void chrome.runtime.id;
+      return false;
+    } catch {
+      contextInvalidated = true;
+      return true;
+    }
+  }
 
   function log(...args: unknown[]): void {
     console.log(LOG_PREFIX, ...args);
@@ -86,6 +100,7 @@
       if (!knownParticipants.has(name)) {
         knownParticipants.add(name);
         log('Found participant name:', name);
+        if (isContextInvalidated()) return;
         chrome.runtime.sendMessage({
           type: MSG_CAPTION_SPEAKER_NAME,
           speakerName: name,
@@ -95,6 +110,8 @@
   }
 
   function startParticipantScanner(): void {
+    if (participantScannerStarted) return;
+    participantScannerStarted = true;
     // Scan every 3 seconds — participants don't change often
     setInterval(scanParticipantNames, 3000);
     // Initial scan after a short delay
@@ -133,7 +150,34 @@
     return null;
   }
 
+  /** Check if captions are visibly active in the DOM. */
+  function areCaptionsActive(): boolean {
+    // Check for the native caption overlay container with content
+    const overlay = document.querySelector('.a4cQT');
+    if (overlay && overlay.textContent && overlay.textContent.trim().length > 0) return true;
+
+    // Check for a "turn off captions" button (indicates captions are on)
+    const buttons = document.querySelectorAll('button[aria-label]');
+    for (const btn of buttons) {
+      const label = (btn.getAttribute('aria-label') ?? '').toLowerCase();
+      if (
+        (label.includes('caption') || label.includes('subtitle')) &&
+        (label.includes('turn off') || label.includes('hide') || label.includes('disable'))
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   async function tryDirectCaptionButton(): Promise<boolean> {
+    // First check if captions are already active
+    if (areCaptionsActive()) {
+      log('Captions already enabled (verified)');
+      return true;
+    }
+
     const labels = ['turn on captions', 'captions', 'closed caption', 'subtitles'];
     for (const label of labels) {
       const btn = findButtonByLabel(label);
@@ -144,10 +188,38 @@
           return true;
         }
         log('Found caption button, clicking:', ariaLabel);
-        await clickAndWait(btn, 500);
+        await clickAndWait(btn, 1000);
+
+        // Verify captions actually activated after clicking
+        if (areCaptionsActive()) {
+          log('Captions verified active after click');
+          return true;
+        }
+
+        // Wait a bit more and check again — Meet UI can be slow
+        await delay(2000);
+        if (areCaptionsActive()) {
+          log('Captions verified active after extended wait');
+          return true;
+        }
+
+        log('Clicked caption button but captions did not activate, continuing');
+        // Don't return true — the click may have opened a dropdown instead
+      }
+    }
+
+    // Also try clicking icon-based caption buttons (closed_caption icon)
+    const ccIconBtn = findIconButton('closed_caption');
+    if (ccIconBtn) {
+      log('Found closed_caption icon button, clicking');
+      await clickAndWait(ccIconBtn, 1000);
+      await delay(2000);
+      if (areCaptionsActive()) {
+        log('Captions verified active after icon button click');
         return true;
       }
     }
+
     return false;
   }
 
@@ -213,46 +285,65 @@
     return false;
   }
 
+  function onCaptionsConfirmed(): void {
+    captionAutoEnabled = true;
+    hideCaptionOverlay();
+    startParticipantScanner();
+  }
+
   async function autoEnableCaptions(retries = 3): Promise<void> {
     if (captionAutoEnabled) return;
 
     for (let attempt = 0; attempt < retries; attempt++) {
       log(`Auto-enable captions attempt ${attempt + 1}/${retries}`);
 
-      const existing = document.querySelector('.a4cQT');
-      if (existing && existing.textContent && existing.textContent.trim().length > 0) {
+      if (areCaptionsActive()) {
         log('Captions already active');
-        captionAutoEnabled = true;
-        hideCaptionOverlay();
-        startParticipantScanner();
+        onCaptionsConfirmed();
         return;
       }
 
       if (await tryDirectCaptionButton()) {
-        captionAutoEnabled = true;
-        hideCaptionOverlay();
-        startParticipantScanner();
+        onCaptionsConfirmed();
         return;
       }
 
       if (await tryMenuCaptionEnable()) {
-        captionAutoEnabled = true;
-        hideCaptionOverlay();
-        startParticipantScanner();
+        onCaptionsConfirmed();
         return;
       }
 
-      await delay(5000);
+      await delay(3000);
     }
 
     log('Could not auto-enable captions after', retries, 'attempts');
   }
 
   function isMeetingJoined(): boolean {
-    return !!(
-      document.querySelector('[data-call-ended]') === null &&
-      (findButtonByLabel('microphone') || findButtonByLabel('camera') || findIconButton('mic'))
-    );
+    // Check for call-ended screen — if present, we're not in a meeting
+    if (document.querySelector('[data-call-ended]')) return false;
+
+    // Strategy 1: standard button labels
+    if (findButtonByLabel('microphone') || findButtonByLabel('camera') || findIconButton('mic')) {
+      return true;
+    }
+
+    // Strategy 2: icon-based buttons (mic, videocam)
+    if (findIconButton('mic') || findIconButton('mic_off') || findIconButton('videocam') || findIconButton('videocam_off')) {
+      return true;
+    }
+
+    // Strategy 3: meeting-specific DOM markers
+    if (document.querySelector('[data-self-name]') || document.querySelector('[data-participant-id]')) {
+      return true;
+    }
+
+    // Strategy 4: button labels in other languages (mute/unmute patterns)
+    if (findButtonByLabel('mute') || findButtonByLabel('unmute')) {
+      return true;
+    }
+
+    return false;
   }
 
   // Inject hiding CSS early
@@ -269,6 +360,13 @@
   let autoEnableInProgress = false;
 
   function checkAndAutoEnable(): void {
+    if (isContextInvalidated()) {
+      if (autoEnableCheckInterval) {
+        clearInterval(autoEnableCheckInterval);
+        autoEnableCheckInterval = null;
+      }
+      return;
+    }
     if (captionAutoEnabled) {
       if (autoEnableCheckInterval) {
         clearInterval(autoEnableCheckInterval);
@@ -280,12 +378,29 @@
       autoEnableInProgress = true;
       log('Meeting joined detected, will auto-enable captions');
       setTimeout(() => {
-        autoEnableCaptions(2).finally(() => { autoEnableInProgress = false; });
-      }, 3000);
+        autoEnableCaptions(3).finally(() => { autoEnableInProgress = false; });
+      }, 2000);
     }
   }
 
-  autoEnableCheckInterval = setInterval(checkAndAutoEnable, 15000);
-  // Run a fast initial check
+  autoEnableCheckInterval = setInterval(checkAndAutoEnable, 10000);
+  // Run fast initial checks
   setTimeout(checkAndAutoEnable, 2000);
+  setTimeout(checkAndAutoEnable, 5000);
+
+  // Listen for retry requests from the service worker (sent when no caption
+  // data arrives for a while despite having an active meeting).
+  chrome.runtime.onMessage.addListener((message): undefined => {
+    if (message.type === MSG_RETRY_CAPTIONS) {
+      log('Service worker requested caption retry');
+      captionAutoEnabled = false;
+      autoEnableInProgress = false;
+      // Re-start the check interval if it was cleared
+      if (!autoEnableCheckInterval) {
+        autoEnableCheckInterval = setInterval(checkAndAutoEnable, 10000);
+      }
+      // Trigger immediately
+      setTimeout(checkAndAutoEnable, 500);
+    }
+  });
 })();
