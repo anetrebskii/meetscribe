@@ -394,13 +394,23 @@ import { LANGUAGE_CODES } from '../utils/constants';
     }, 1500);
   }
 
+  async function getExportResponse(): Promise<{ content?: string; title?: string; startTime?: number } | undefined> {
+    if (currentView === 'meeting-detail' && viewingMeetingId) {
+      return chrome.runtime.sendMessage({
+        type: MSG.EXPORT_MEETING,
+        payload: { id: viewingMeetingId, format: 'md' },
+      });
+    }
+    const title = currentMeeting?.title ?? 'Meeting Transcript';
+    return chrome.runtime.sendMessage({
+      type: MSG.EXPORT_TRANSCRIPT,
+      payload: { format: 'md', title },
+    });
+  }
+
   btnCopy.addEventListener('click', async () => {
     try {
-      const title = currentMeeting?.title ?? 'Meeting Transcript';
-      const response = await chrome.runtime.sendMessage({
-        type: MSG.EXPORT_TRANSCRIPT,
-        payload: { format: 'md', title },
-      });
+      const response = await getExportResponse();
       if (response?.content) {
         await copyToClipboard(response.content, btnCopy);
       }
@@ -409,18 +419,15 @@ import { LANGUAGE_CODES } from '../utils/constants';
 
   btnExport.addEventListener('click', async () => {
     try {
-      const title = currentMeeting?.title ?? 'Meeting Transcript';
-      const response = await chrome.runtime.sendMessage({
-        type: MSG.EXPORT_TRANSCRIPT,
-        payload: { format: 'md', title },
-      });
+      const response = await getExportResponse();
       if (response?.content) {
         const blob = new Blob([response.content], { type: 'text/markdown' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
+        const title = response.title ?? currentMeeting?.title ?? 'Meeting Transcript';
         const safeName = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim();
-        const d = new Date(currentMeeting?.startTime ?? Date.now());
+        const d = new Date(response.startTime ?? currentMeeting?.startTime ?? Date.now());
         const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
         a.download = `${safeName} ${dateStr}.md`;
         a.click();
@@ -436,7 +443,8 @@ import { LANGUAGE_CODES } from '../utils/constants';
     transcriptEl.style.display = view === 'live' ? '' : 'none';
     meetingsEl.style.display = view === 'meetings' ? '' : 'none';
     detailEl.style.display = view === 'meeting-detail' ? '' : 'none';
-    toolbarEl.style.display = view === 'live' ? '' : 'none';
+    toolbarEl.style.display = (view === 'live' || view === 'meeting-detail') ? '' : 'none';
+    langSelect.style.display = view === 'live' ? '' : 'none';
     backNav.style.display = (view === 'live' || view === 'meeting-detail') ? '' : 'none';
 
     btnMeetings.classList.toggle('active', view === 'meetings' || view === 'meeting-detail');
