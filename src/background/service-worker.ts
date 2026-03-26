@@ -733,6 +733,15 @@ async function handleMessage(
     case MSG.RENAME_MEETING: {
       const renameMsg = message.payload as { id: string; title: string };
       const updated = renameMeeting(renameMsg.id, renameMsg.title);
+      if (updated) {
+        // Broadcast to all popup ports so live view stays in sync
+        for (const [sid, session] of sessions) {
+          if (session.meetingId === renameMsg.id) {
+            broadcastToPopup({ type: 'meeting_renamed', meeting: updated }, sid);
+            break;
+          }
+        }
+      }
       sendResponse({ meeting: updated });
       return;
     }

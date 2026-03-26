@@ -452,7 +452,7 @@ import { LANGUAGE_CODES } from '../utils/constants';
     switch (view) {
       case 'live':
         popupTitle.textContent = currentMeeting ? currentMeeting.title : 'Live';
-        updateFooter();
+        renderAllEntries();
         break;
       case 'meetings':
         popupTitle.textContent = 'Meetings';
@@ -980,6 +980,15 @@ import { LANGUAGE_CODES } from '../utils/constants';
               currentMeeting.participants[message.deviceId] = message.deviceName;
               participantCount = countParticipants(currentMeeting);
               updateFooter();
+            }
+            break;
+
+          case 'meeting_renamed':
+            if (currentMeeting && message.meeting?.id === currentMeeting.id) {
+              currentMeeting.title = message.meeting.title;
+              if (currentView === 'live') {
+                popupTitle.textContent = currentMeeting.title;
+              }
             }
             break;
         }
