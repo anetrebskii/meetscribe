@@ -1,5 +1,6 @@
 import { MSG, POPUP_PORT_NAME, type TranscriptEntry, type Meeting } from '../utils/types';
 import { LANGUAGE_CODES } from '../utils/constants';
+import { exportAsMarkdown } from '../utils/transcript-store';
 
 (function () {
   const STORAGE_POS_KEY = 'popup_position';
@@ -57,6 +58,9 @@ import { LANGUAGE_CODES } from '../utils/constants';
   let autoScroll = true;
   let currentView: 'live' | 'meetings' | 'meeting-detail' = 'live';
   let viewingMeetingId: string | null = null;
+  let detailEntries: TranscriptEntry[] = [];
+  let detailTitle = '';
+  let detailStartTime = 0;
   let popupWidth = DEFAULT_WIDTH;
   let popupHeight = DEFAULT_HEIGHT;
 
@@ -396,6 +400,13 @@ import { LANGUAGE_CODES } from '../utils/constants';
 
   async function getExportResponse(): Promise<{ content?: string; title?: string; startTime?: number } | undefined> {
     if (currentView === 'meeting-detail' && viewingMeetingId) {
+      // Use locally cached entries — the service worker may have restarted
+      // and lost in-memory data, so we format directly from the entries
+      // that were already fetched and displayed.
+      if (detailEntries.length > 0) {
+        const content = exportAsMarkdown(detailEntries, detailTitle);
+        return { content, title: detailTitle, startTime: detailStartTime };
+      }
       return chrome.runtime.sendMessage({
         type: MSG.EXPORT_MEETING,
         payload: { id: viewingMeetingId, format: 'md' },
@@ -882,6 +893,9 @@ import { LANGUAGE_CODES } from '../utils/constants';
         meetingId,
       });
       const meetingEntries = (response?.entries ?? []) as TranscriptEntry[];
+      detailEntries = meetingEntries;
+      detailTitle = title;
+      detailStartTime = meetingEntries[0]?.timestamp ?? Date.now();
       detailEl.innerHTML = '';
 
       if (meetingEntries.length === 0) {
