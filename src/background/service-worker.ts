@@ -38,6 +38,9 @@ import {
   getMeetingTitles,
   findRecentMeeting,
   resumeMeeting,
+  addNote,
+  updateNote,
+  deleteNote,
 } from '../utils/meeting-store';
 
 // --- Per-session state ---
@@ -291,6 +294,7 @@ chrome.runtime.onConnect.addListener((port) => {
       type: 'meeting_snapshot',
       meeting,
       entries: snapshotEntries,
+      notes: meeting?.notes ?? [],
     });
 
     port.onDisconnect.addListener(() => {
@@ -674,7 +678,10 @@ async function handleMessage(
       const payload = message.payload as { format?: string; title?: string };
       const format = payload?.format ?? 'txt';
       const entries = sessionId ? getEntries(sessionId) : [];
-      const exported = formatExport(entries, format, payload?.title);
+      const session = sessionId ? sessions.get(sessionId) : undefined;
+      const meetingForExport = session?.meetingId ? getMeeting(session.meetingId) : null;
+      const notes = meetingForExport?.notes ?? [];
+      const exported = formatExport(entries, format, payload?.title, notes);
       sendResponse({ content: exported, format });
       return;
     }
@@ -764,7 +771,7 @@ async function handleMessage(
       const meetingToExport = getMeeting(exportMsg.id);
       if (meetingToExport) {
         const format = exportMsg.format ?? 'md';
-        const content = formatExport(meetingToExport.entries, format, meetingToExport.title);
+        const content = formatExport(meetingToExport.entries, format, meetingToExport.title, meetingToExport.notes ?? []);
         sendResponse({ content, format, title: meetingToExport.title, startTime: meetingToExport.startTime });
       } else {
         sendResponse({ content: null });
@@ -788,7 +795,53 @@ async function handleMessage(
     case MSG.GET_MEETING_ENTRIES: {
       const meetingId = (message as unknown as { meetingId: string }).meetingId;
       const meetingData = getMeeting(meetingId);
-      sendResponse({ entries: meetingData?.entries ?? [] });
+      sendResponse({ entries: meetingData?.entries ?? [], notes: meetingData?.notes ?? [] });
+      return;
+    }
+
+    case MSG.ADD_NOTE: {
+      const notePayload = message.payload as { meetingId: string; text: string };
+      const note = addNote(notePayload.meetingId, notePayload.text);
+      if (note) {
+        // Broadcast to popup ports so live view stays in sync
+        for (const [sid, session] of sessions) {
+          if (session.meetingId === notePayload.meetingId) {
+            broadcastToPopup({ type: 'note_added', note }, sid);
+            break;
+          }
+        }
+      }
+      sendResponse({ note });
+      return;
+    }
+
+    case MSG.UPDATE_NOTE: {
+      const updNotePayload = message.payload as { meetingId: string; noteId: string; text: string };
+      const updatedNote = updateNote(updNotePayload.meetingId, updNotePayload.noteId, updNotePayload.text);
+      if (updatedNote) {
+        for (const [sid, session] of sessions) {
+          if (session.meetingId === updNotePayload.meetingId) {
+            broadcastToPopup({ type: 'note_updated', note: updatedNote }, sid);
+            break;
+          }
+        }
+      }
+      sendResponse({ note: updatedNote });
+      return;
+    }
+
+    case MSG.DELETE_NOTE: {
+      const delNotePayload = message.payload as { meetingId: string; noteId: string };
+      const deleted = deleteNote(delNotePayload.meetingId, delNotePayload.noteId);
+      if (deleted) {
+        for (const [sid, session] of sessions) {
+          if (session.meetingId === delNotePayload.meetingId) {
+            broadcastToPopup({ type: 'note_deleted', noteId: delNotePayload.noteId }, sid);
+            break;
+          }
+        }
+      }
+      sendResponse({ ok: deleted });
       return;
     }
 
@@ -799,13 +852,13 @@ async function handleMessage(
   sendResponse({ ok: true });
 }
 
-function formatExport(entries: TranscriptEntry[], format: string, title?: string): string {
+function formatExport(entries: TranscriptEntry[], format: string, title?: string, notes?: import('../utils/types').NoteEntry[]): string {
   switch (format) {
     case 'srt': return exportAsSrt(entries);
     case 'vtt': return exportAsVtt(entries);
     case 'json': return exportAsJson(entries);
-    case 'md': return exportAsMarkdown(entries, title);
+    case 'md': return exportAsMarkdown(entries, title, notes);
     case 'txt':
-    default: return exportAsText(entries);
+    default: return exportAsText(entries, notes);
   }
 }

@@ -1,4 +1,4 @@
-import { MSG, POPUP_PORT_NAME, type TranscriptEntry, type Meeting } from '../utils/types';
+import { MSG, POPUP_PORT_NAME, type TranscriptEntry, type NoteEntry, type Meeting } from '../utils/types';
 import { LANGUAGE_CODES } from '../utils/constants';
 import { exportAsMarkdown } from '../utils/transcript-store';
 
@@ -12,6 +12,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
 
   let port: chrome.runtime.Port | null = null;
   let entries: TranscriptEntry[] = [];
+  let notes: NoteEntry[] = [];
   let currentMeeting: Meeting | null = null;
   let participantCount = 0;
   let isMinimized = false;
@@ -59,6 +60,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
   let currentView: 'live' | 'meetings' | 'meeting-detail' = 'live';
   let viewingMeetingId: string | null = null;
   let detailEntries: TranscriptEntry[] = [];
+  let detailNotes: NoteEntry[] = [];
   let detailTitle = '';
   let detailStartTime = 0;
   let popupWidth = DEFAULT_WIDTH;
@@ -105,7 +107,30 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         <button class="btn-back-live" id="btn-back-live">&larr; Meetings</button>
       </div>
       <div class="content-area" id="content-area">
-        <div class="transcript" id="transcript"></div>
+        <div class="live-sections" id="live-sections">
+          <div class="section" id="section-notes">
+            <div class="section-header" id="section-notes-header">
+              <span class="section-title">Notes</span>
+              <span class="section-chevron">&#9660;</span>
+            </div>
+            <div class="section-body" id="section-notes-body">
+              <div class="notes-input-row">
+                <input type="text" class="notes-input" id="notes-input" placeholder="Add a note..." />
+                <button class="btn-small btn-add-note" id="btn-add-note">Add</button>
+              </div>
+              <div class="notes-list" id="notes-list"></div>
+            </div>
+          </div>
+          <div class="section" id="section-transcript">
+            <div class="section-header" id="section-transcript-header">
+              <span class="section-title">Transcription</span>
+              <span class="section-chevron">&#9660;</span>
+            </div>
+            <div class="section-body" id="section-transcript-body">
+              <div class="transcript" id="transcript"></div>
+            </div>
+          </div>
+        </div>
         <div class="meetings-view" id="meetings-view" style="display:none"></div>
         <div class="detail-view" id="detail-view" style="display:none"></div>
       </div>
@@ -145,10 +170,122 @@ import { exportAsMarkdown } from '../utils/transcript-store';
   const footerEl = shadow.getElementById('footer')!;
   const backNav = shadow.getElementById('back-nav')!;
   const btnBackLive = shadow.getElementById('btn-back-live')!;
+  const liveSections = shadow.getElementById('live-sections')!;
+  const sectionNotesHeader = shadow.getElementById('section-notes-header')!;
+  const sectionNotesBody = shadow.getElementById('section-notes-body')!;
+  const sectionTranscriptHeader = shadow.getElementById('section-transcript-header')!;
+  const sectionTranscriptBody = shadow.getElementById('section-transcript-body')!;
+  const notesInput = shadow.getElementById('notes-input') as HTMLInputElement;
+  const btnAddNote = shadow.getElementById('btn-add-note')!;
+  const notesList = shadow.getElementById('notes-list')!;
 
   btnBackLive.addEventListener('click', () => {
     switchView('meetings');
   });
+
+  // --- Collapsible sections ---
+
+  function toggleSection(header: HTMLElement, body: HTMLElement): void {
+    const collapsed = body.style.display === 'none';
+    body.style.display = collapsed ? '' : 'none';
+    header.querySelector('.section-chevron')!.textContent = collapsed ? '\u25BC' : '\u25B6';
+    header.classList.toggle('collapsed', !collapsed);
+  }
+
+  sectionNotesHeader.addEventListener('click', () => toggleSection(sectionNotesHeader, sectionNotesBody));
+  sectionTranscriptHeader.addEventListener('click', () => toggleSection(sectionTranscriptHeader, sectionTranscriptBody));
+
+  function addNoteFromInput(): void {
+    const text = notesInput.value.trim();
+    if (!text || !currentMeeting) return;
+    notesInput.value = '';
+    chrome.runtime.sendMessage({
+      type: MSG.ADD_NOTE,
+      payload: { meetingId: currentMeeting.id, text },
+    }).catch(() => {});
+  }
+
+  btnAddNote.addEventListener('click', addNoteFromInput);
+  // Stop all keyboard events from reaching Google Meet's shortcut handler.
+  // Composed events escape the shadow DOM, so we catch them on the host in
+  // the capture phase. All input-specific logic (Enter to save) must live
+  // here too, because stopPropagation in capture prevents bubble listeners.
+  for (const evt of ['keydown', 'keyup', 'keypress'] as const) {
+    host.addEventListener(evt, (e: Event) => {
+      const active = shadow.activeElement as HTMLElement | null;
+      if (!active) return;
+      const isNotesInput = active === notesInput;
+      const isEditable = active.contentEditable === 'true';
+      if (!isNotesInput && !isEditable) return;
+      e.stopPropagation();
+      if (isNotesInput && evt === 'keydown' && (e as KeyboardEvent).key === 'Enter') {
+        e.preventDefault();
+        addNoteFromInput();
+      }
+    }, true);
+  }
+
+  function renderNoteItem(note: NoteEntry): HTMLElement {
+    const div = document.createElement('div');
+    div.className = 'note-item';
+    div.dataset.noteId = note.id;
+    const time = new Date(note.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    div.innerHTML = `
+      <span class="note-time">${time}</span>
+      <div class="note-text">${escapeHtml(note.text)}</div>
+      <button class="note-delete" title="Delete note">\u2715</button>
+    `;
+    const textEl = div.querySelector('.note-text') as HTMLElement;
+
+    // Double-click to edit
+    textEl.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      textEl.contentEditable = 'true';
+      textEl.focus();
+      const range = document.createRange();
+      range.selectNodeContents(textEl);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    });
+    textEl.addEventListener('blur', () => {
+      if (textEl.contentEditable !== 'true') return;
+      textEl.contentEditable = 'false';
+      const newText = textEl.textContent?.trim();
+      if (newText && currentMeeting && newText !== note.text) {
+        note.text = newText;
+        chrome.runtime.sendMessage({
+          type: MSG.UPDATE_NOTE,
+          payload: { meetingId: currentMeeting.id, noteId: note.id, text: newText },
+        }).catch(() => {});
+      }
+    });
+    for (const evt of ['keydown', 'keyup', 'keypress'] as const) {
+      textEl.addEventListener(evt, (e: Event) => { e.stopPropagation(); });
+    }
+    textEl.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Enter') { e.preventDefault(); textEl.blur(); }
+      if (e.key === 'Escape') { textEl.textContent = note.text; textEl.blur(); }
+    });
+
+    div.querySelector('.note-delete')!.addEventListener('click', () => {
+      if (!currentMeeting) return;
+      chrome.runtime.sendMessage({
+        type: MSG.DELETE_NOTE,
+        payload: { meetingId: currentMeeting.id, noteId: note.id },
+      }).catch(() => {});
+    });
+    return div;
+  }
+
+
+  function renderAllNotes(): void {
+    notesList.innerHTML = '';
+    const sorted = [...notes].sort((a, b) => b.timestamp - a.timestamp);
+    for (const note of sorted) {
+      notesList.appendChild(renderNoteItem(note));
+    }
+  }
 
   // --- Language selector: build with recent languages at top ---
 
@@ -404,7 +541,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
       // and lost in-memory data, so we format directly from the entries
       // that were already fetched and displayed.
       if (detailEntries.length > 0) {
-        const content = exportAsMarkdown(detailEntries, detailTitle);
+        const content = exportAsMarkdown(detailEntries, detailTitle, detailNotes);
         return { content, title: detailTitle, startTime: detailStartTime };
       }
       return chrome.runtime.sendMessage({
@@ -451,7 +588,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
 
   function switchView(view: typeof currentView): void {
     currentView = view;
-    transcriptEl.style.display = view === 'live' ? '' : 'none';
+    liveSections.style.display = view === 'live' ? '' : 'none';
     meetingsEl.style.display = view === 'meetings' ? '' : 'none';
     detailEl.style.display = view === 'meeting-detail' ? '' : 'none';
     toolbarEl.style.display = (view === 'live' || view === 'meeting-detail') ? '' : 'none';
@@ -893,7 +1030,9 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         meetingId,
       });
       const meetingEntries = (response?.entries ?? []) as TranscriptEntry[];
+      const meetingNotes = (response?.notes ?? []) as NoteEntry[];
       detailEntries = meetingEntries;
+      detailNotes = meetingNotes;
       detailTitle = title;
       detailStartTime = meetingEntries[0]?.timestamp ?? Date.now();
       detailEl.innerHTML = '';
@@ -903,6 +1042,25 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         footerLeft.textContent = '0 entries';
         footerRight.textContent = '';
         return;
+      }
+
+      // Notes section (if any)
+      if (meetingNotes.length > 0) {
+        const notesSection = document.createElement('div');
+        notesSection.className = 'detail-notes';
+        notesSection.innerHTML = '<div class="detail-notes-title">Notes</div>';
+        const sortedNotes = [...meetingNotes].sort((a, b) => b.timestamp - a.timestamp);
+        for (const note of sortedNotes) {
+          const noteDiv = document.createElement('div');
+          noteDiv.className = 'note-item';
+          const time = new Date(note.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          noteDiv.innerHTML = `
+            <span class="note-time">${time}</span>
+            <span class="note-text">${escapeHtml(note.text)}</span>
+          `;
+          notesSection.appendChild(noteDiv);
+        }
+        detailEl.appendChild(notesSection);
       }
 
       // Entries
@@ -940,6 +1098,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
           case 'meeting_snapshot':
             currentMeeting = message.meeting;
             entries = message.entries ?? [];
+            notes = message.notes ?? [];
             if (currentMeeting) {
               participantCount = countParticipants(currentMeeting);
               if (currentView === 'live') {
@@ -947,6 +1106,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
               }
             }
             renderAllEntries();
+            renderAllNotes();
             break;
 
           case 'new_entry':
@@ -971,6 +1131,8 @@ import { exportAsMarkdown } from '../utils/transcript-store';
           case 'meeting_started':
             currentMeeting = message.meeting;
             participantCount = 0;
+            notes = [];
+            renderAllNotes();
             if (currentView === 'live') {
               popupTitle.textContent = currentMeeting?.title ?? 'Live';
             }
@@ -979,6 +1141,8 @@ import { exportAsMarkdown } from '../utils/transcript-store';
           case 'meeting_ended':
             currentMeeting = null;
             participantCount = 0;
+            notes = [];
+            renderAllNotes();
             if (currentView === 'live') {
               popupTitle.textContent = 'Live';
               updateFooter();
@@ -1003,6 +1167,33 @@ import { exportAsMarkdown } from '../utils/transcript-store';
               if (currentView === 'live') {
                 popupTitle.textContent = currentMeeting.title;
               }
+            }
+            break;
+
+          case 'note_added':
+            notes.unshift(message.note);
+            if (currentView === 'live') {
+              notesList.prepend(renderNoteItem(message.note));
+            }
+            break;
+
+          case 'note_updated': {
+            const idx = notes.findIndex(n => n.id === message.note.id);
+            if (idx >= 0) notes[idx] = message.note;
+            if (currentView === 'live') {
+              const el = notesList.querySelector(`[data-note-id="${message.note.id}"] .note-text`);
+              if (el && el !== shadow.activeElement) {
+                el.textContent = message.note.text;
+              }
+            }
+            break;
+          }
+
+          case 'note_deleted':
+            notes = notes.filter(n => n.id !== message.noteId);
+            if (currentView === 'live') {
+              const noteEl = notesList.querySelector(`[data-note-id="${message.noteId}"]`);
+              if (noteEl) noteEl.remove();
             }
             break;
         }
@@ -1296,6 +1487,155 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         background: rgba(138, 180, 248, 0.15);
       }
 
+      .btn-small.active {
+        background: rgba(138, 180, 248, 0.2);
+        border-color: #8ab4f8;
+      }
+
+      .section {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+
+      .section:last-child {
+        border-bottom: none;
+      }
+
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6px 12px;
+        cursor: pointer;
+        user-select: none;
+        transition: background 0.15s;
+      }
+
+      .section-header:hover {
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .section-title {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #9aa0a6;
+      }
+
+      #section-notes .section-title {
+        color: #fbbc04;
+      }
+
+      #section-transcript .section-title {
+        color: #8ab4f8;
+      }
+
+      .section-chevron {
+        font-size: 9px;
+        color: #9aa0a6;
+        transition: transform 0.15s;
+      }
+
+      .section-header.collapsed .section-chevron {
+        transform: rotate(0);
+      }
+
+      .section-body {
+        padding: 0 12px 8px;
+      }
+
+      .notes-input-row {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 6px;
+        align-items: flex-end;
+      }
+
+      .notes-input {
+        flex: 1;
+        min-width: 0;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        color: #e8eaed;
+        padding: 4px 8px;
+        font-size: 12px;
+        font-family: inherit;
+        outline: none;
+      }
+
+      .notes-input:focus {
+        border-color: #8ab4f8;
+      }
+
+      .notes-input::placeholder {
+        color: #9aa0a6;
+      }
+
+      .btn-add-note {
+        flex-shrink: 0;
+      }
+
+      .notes-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .note-item {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        padding: 4px 6px;
+        background: rgba(251, 188, 4, 0.08);
+        border-radius: 6px;
+        font-size: 12px;
+        border-left: 2px solid rgba(251, 188, 4, 0.5);
+      }
+
+      .note-time {
+        color: #9aa0a6;
+        font-size: 10px;
+        flex-shrink: 0;
+        margin-top: 1px;
+      }
+
+      .note-text {
+        flex: 1;
+        color: #e8eaed;
+        word-break: break-word;
+        line-height: 1.3;
+        cursor: text;
+        border-radius: 3px;
+        padding: 0 2px;
+        outline: none;
+      }
+
+      .note-text[contenteditable="true"] {
+        background: rgba(255, 255, 255, 0.08);
+        outline: 1px solid #8ab4f8;
+      }
+
+      .note-delete {
+        background: none;
+        border: none;
+        color: #9aa0a6;
+        cursor: pointer;
+        font-size: 10px;
+        padding: 0 2px;
+        flex-shrink: 0;
+        opacity: 0;
+        transition: opacity 0.15s, color 0.15s;
+      }
+
+      .note-item:hover .note-delete {
+        opacity: 1;
+      }
+
+      .note-delete:hover {
+        color: #f28b82;
+      }
+
       .content-area {
         flex: 1;
         min-height: 0;
@@ -1304,28 +1644,86 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         flex-direction: column;
       }
 
-      .transcript,
+      .live-sections {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      #section-notes {
+        flex-shrink: 0;
+      }
+
+      #section-notes .section-body {
+        max-height: 150px;
+        overflow-y: auto;
+      }
+
+      #section-notes .section-body::-webkit-scrollbar {
+        width: 4px;
+      }
+      #section-notes .section-body::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      #section-notes .section-body::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.15);
+        border-radius: 2px;
+      }
+
+      #section-transcript {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      #section-transcript .section-body {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .transcript {
+        flex: 1;
+        overflow-y: auto;
+        scroll-behavior: smooth;
+        padding: 0;
+      }
+
+      .transcript::-webkit-scrollbar {
+        width: 4px;
+      }
+      .transcript::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .transcript::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.15);
+        border-radius: 2px;
+      }
+
       .meetings-view,
       .detail-view {
         flex: 1;
         overflow-y: auto;
-        padding: 8px 12px;
         scroll-behavior: smooth;
+        padding: 8px 12px;
       }
 
-      .transcript::-webkit-scrollbar,
       .meetings-view::-webkit-scrollbar,
       .detail-view::-webkit-scrollbar {
         width: 4px;
       }
 
-      .transcript::-webkit-scrollbar-track,
       .meetings-view::-webkit-scrollbar-track,
       .detail-view::-webkit-scrollbar-track {
         background: transparent;
       }
 
-      .transcript::-webkit-scrollbar-thumb,
       .meetings-view::-webkit-scrollbar-thumb,
       .detail-view::-webkit-scrollbar-thumb {
         background: rgba(255, 255, 255, 0.15);
@@ -1578,6 +1976,21 @@ import { exportAsMarkdown } from '../utils/transcript-store';
 
       .btn-back:hover {
         text-decoration: underline;
+      }
+
+      .detail-notes {
+        margin-bottom: 12px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .detail-notes-title {
+        font-size: 11px;
+        font-weight: 600;
+        color: #fbbc04;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 6px;
       }
 
       .detail-entries {

@@ -1,4 +1,4 @@
-import type { Meeting, TranscriptEntry } from './types';
+import type { Meeting, TranscriptEntry, NoteEntry } from './types';
 import { STORAGE_DEBOUNCE_MS, MEETING_RESUME_WINDOW_MS } from './constants';
 
 const STORAGE_KEY = 'meetings';
@@ -46,6 +46,7 @@ export function createMeeting(meetingCode: string): Meeting {
     endTime: null,
     participants: {},
     entries: [],
+    notes: [],
   };
   meetings.set(meeting.id, meeting);
   schedulePersist();
@@ -118,6 +119,44 @@ export function renameMeeting(id: string, title: string): Meeting | null {
   meeting.title = title;
   schedulePersist();
   return meeting;
+}
+
+export function addNote(meetingId: string, text: string): NoteEntry | null {
+  const meeting = meetings.get(meetingId);
+  if (!meeting) return null;
+  const note: NoteEntry = {
+    id: `note-${Date.now()}-${++idCounter}`,
+    text: text.trim(),
+    timestamp: Date.now(),
+  };
+  meeting.notes.push(note);
+  schedulePersist();
+  return note;
+}
+
+export function updateNote(meetingId: string, noteId: string, text: string): NoteEntry | null {
+  const meeting = meetings.get(meetingId);
+  if (!meeting) return null;
+  const note = meeting.notes.find(n => n.id === noteId);
+  if (!note) return null;
+  note.text = text.trim();
+  schedulePersist();
+  return note;
+}
+
+export function deleteNote(meetingId: string, noteId: string): boolean {
+  const meeting = meetings.get(meetingId);
+  if (!meeting) return false;
+  const idx = meeting.notes.findIndex(n => n.id === noteId);
+  if (idx < 0) return false;
+  meeting.notes.splice(idx, 1);
+  schedulePersist();
+  return true;
+}
+
+export function getNotes(meetingId: string): NoteEntry[] {
+  const meeting = meetings.get(meetingId);
+  return meeting?.notes ?? [];
 }
 
 export function findRecentMeeting(meetingCode: string): Meeting | null {

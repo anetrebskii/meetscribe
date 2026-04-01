@@ -7,6 +7,12 @@ export interface TranscriptEntry {
   deviceId?: string;
 }
 
+export interface NoteEntry {
+  id: string;
+  text: string;
+  timestamp: number;
+}
+
 export interface Meeting {
   id: string;
   meetingCode: string;
@@ -16,6 +22,7 @@ export interface Meeting {
   endTime: number | null;
   participants: Record<string, string>; // deviceId → name
   entries: TranscriptEntry[];
+  notes: NoteEntry[];
 }
 
 export interface RtcCaptionMessage {
@@ -69,6 +76,9 @@ export const MSG = {
   GET_MEETING_TITLES: 'get_meeting_titles',
   REFRESH_DEVICES: 'refresh_devices',
   RETRY_CAPTIONS: 'retry_captions',
+  ADD_NOTE: 'add_note',
+  UPDATE_NOTE: 'update_note',
+  DELETE_NOTE: 'delete_note',
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
