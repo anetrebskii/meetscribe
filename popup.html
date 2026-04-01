@@ -28,6 +28,7 @@
       flex-shrink: 0;
     }
     .header-title { flex: 1; }
+    .header-actions { display: flex; gap: 4px; flex-shrink: 0; }
     .btn-back {
       background: none;
       border: none;
@@ -223,6 +224,10 @@
   <div class="header">
     <button class="btn-back" id="btn-back" style="display:none">&larr;</button>
     <span class="header-title" id="header-title">MeetScribe</span>
+    <div class="header-actions" id="header-actions" style="display:none">
+      <button class="meeting-action" id="detail-copy" title="Copy as Markdown">&#x2398;</button>
+      <button class="meeting-action" id="detail-export" title="Export">&#x2193;</button>
+    </div>
   </div>
   <div class="content" id="content">
     <div class="empty-state">Loading...</div>

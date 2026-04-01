@@ -100,8 +100,8 @@ import { exportAsMarkdown } from '../utils/transcript-store';
     <div class="body" id="body">
       <div class="toolbar" id="toolbar">
         <select class="lang-select" id="lang-select"></select>
-        <button class="btn-small" id="btn-copy" title="Copy as Markdown">Copy</button>
-        <button class="btn-small" id="btn-export" title="Export transcript">Export</button>
+        <button class="toolbar-action" id="btn-copy" title="Copy as Markdown"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+        <button class="toolbar-action" id="btn-export" title="Export transcript"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
       </div>
       <div class="back-nav" id="back-nav">
         <button class="btn-back-live" id="btn-back-live">&larr; Meetings</button>
@@ -526,11 +526,11 @@ import { exportAsMarkdown } from '../utils/transcript-store';
       document.execCommand('copy');
       document.body.removeChild(ta);
     }
-    const orig = feedbackEl.textContent;
+    const orig = feedbackEl.innerHTML;
     feedbackEl.textContent = '\u2713';
     feedbackEl.title = 'Copied!';
     setTimeout(() => {
-      feedbackEl.textContent = orig;
+      feedbackEl.innerHTML = orig;
       feedbackEl.title = 'Copy as Markdown';
     }, 1500);
   }
@@ -1490,6 +1490,27 @@ import { exportAsMarkdown } from '../utils/transcript-store';
       .btn-small.active {
         background: rgba(138, 180, 248, 0.2);
         border-color: #8ab4f8;
+      }
+
+      .toolbar-action {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        color: #9aa0a6;
+        cursor: pointer;
+        width: 28px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.15s, color 0.15s;
+        padding: 0;
+        flex-shrink: 0;
+      }
+
+      .toolbar-action:hover {
+        background: rgba(138, 180, 248, 0.15);
+        color: #e8eaed;
       }
 
       .section {

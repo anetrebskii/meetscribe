@@ -6,8 +6,12 @@ import { MSG, type Meeting, type TranscriptEntry, type NoteEntry } from '../util
   const btnBack = document.getElementById('btn-back') as HTMLButtonElement;
   const footerEl = document.getElementById('footer')!;
   const footerLeft = document.getElementById('footer-left')!;
+  const headerActions = document.getElementById('header-actions')!;
+  const detailCopyBtn = document.getElementById('detail-copy') as HTMLButtonElement;
+  const detailExportBtn = document.getElementById('detail-export') as HTMLButtonElement;
   let currentView: 'list' | 'detail' = 'list';
   let viewingMeetingId: string | null = null;
+  let viewingMeetingTitle: string = '';
 
   function escapeHtml(str: string): string {
     const div = document.createElement('div');
@@ -25,20 +29,74 @@ import { MSG, type Meeting, type TranscriptEntry, type NoteEntry } from '../util
     currentView = 'list';
     headerTitle.textContent = 'MeetScribe';
     btnBack.style.display = 'none';
+    headerActions.style.display = 'none';
     footerEl.style.display = 'none';
     viewingMeetingId = null;
+    viewingMeetingTitle = '';
     loadMeetings();
   }
 
   function showDetail(meetingId: string, title: string): void {
     currentView = 'detail';
     viewingMeetingId = meetingId;
+    viewingMeetingTitle = title;
     headerTitle.textContent = title;
     btnBack.style.display = 'block';
+    headerActions.style.display = 'flex';
     loadDetail(meetingId);
   }
 
-  // --- Export from detail view ---
+  // --- Detail header actions ---
+
+  detailCopyBtn.addEventListener('click', () => {
+    if (!viewingMeetingId) return;
+    chrome.runtime.sendMessage({
+      type: MSG.EXPORT_MEETING,
+      payload: { id: viewingMeetingId, format: 'md' },
+    }).then(async (response) => {
+      if (response?.content) {
+        try {
+          await navigator.clipboard.writeText(response.content);
+        } catch {
+          const ta = document.createElement('textarea');
+          ta.value = response.content;
+          ta.style.cssText = 'position:fixed;left:-9999px';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        const orig = detailCopyBtn.textContent;
+        detailCopyBtn.textContent = '\u2713';
+        detailCopyBtn.title = 'Copied!';
+        setTimeout(() => {
+          detailCopyBtn.textContent = orig;
+          detailCopyBtn.title = 'Copy as Markdown';
+        }, 1500);
+      }
+    }).catch(() => {});
+  });
+
+  detailExportBtn.addEventListener('click', () => {
+    if (!viewingMeetingId) return;
+    chrome.runtime.sendMessage({
+      type: MSG.EXPORT_MEETING,
+      payload: { id: viewingMeetingId, format: 'md' },
+    }).then((response) => {
+      if (response?.content) {
+        const blob = new Blob([response.content], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const title = (response.title ?? viewingMeetingTitle).replace(/[^a-zA-Z0-9 _-]/g, '').trim();
+        const d = new Date(response.startTime ?? Date.now());
+        const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+        a.download = `${title} ${dateStr}.md`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+    }).catch(() => {});
+  });
 
   // --- Meetings list ---
 
