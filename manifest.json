@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "MeetScribe",
+  "name": "Notula for Google Meet",
   "version": "2.0.0",
-  "description": "Live Google Meet transcription with meeting history.",
+  "description": "Live Google Meet transcription with meeting history. A finished call can save itself as Markdown into a folder on your disk through Notula.",
   "permissions": [
     "storage",
     "activeTab",
@@ -35,7 +35,7 @@
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     },
-    "default_title": "MeetScribe"
+    "default_title": "Notula for Google Meet"
   },
   "icons": {
     "16": "icons/icon16.png",

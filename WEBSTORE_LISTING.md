@@ -1,18 +1,18 @@
-# Chrome Web Store Listing — MeetScribe
+# Chrome Web Store Listing — Notula for Google Meet
 
 ## Title
-MeetScribe
+Notula for Google Meet
 
 ## Summary (132 chars max)
 Live Google Meet transcription with speaker names, meeting history, and one-click Markdown export.
 
 ## Description
 
-MeetScribe captures every word spoken in your Google Meet calls — automatically, in real time, with speaker names attached. No bots join your call and no audio leaves your browser. The extension works entirely on your device using Google Meet's built-in captions.
+Notula for Google Meet captures every word spoken in your Google Meet calls — automatically, in real time, with speaker names attached. No bots join your call and no audio leaves your browser. The extension works entirely on your device using Google Meet's built-in captions.
 
 WHAT YOU GET
 
-When you join a Google Meet call, MeetScribe starts transcribing immediately. A compact floating panel on the page shows the live transcript as people speak. After the meeting, the full transcript is saved and accessible from the extension popup — forever.
+When you join a Google Meet call, Notula for Google Meet starts transcribing immediately. A compact floating panel on the page shows the live transcript as people speak. After the meeting, the full transcript is saved and accessible from the extension popup — forever.
 
 KEY FEATURES
 
@@ -38,13 +38,13 @@ MANAGE YOUR MEETINGS
 
 PRIVACY
 
-MeetScribe runs 100% locally. Transcription is powered by Google Meet's own caption system — no audio is recorded, no data is sent to external servers, and no bot joins your call. All meeting data is stored in your browser's local storage and never leaves your device.
+Notula for Google Meet runs 100% locally. Transcription is powered by Google Meet's own caption system — no audio is recorded, no data is sent to external servers, and no bot joins your call. All meeting data is stored in your browser's local storage and never leaves your device.
 
 HOW IT WORKS
 
-1. Install MeetScribe
+1. Install Notula for Google Meet
 2. Join a Google Meet call
-3. Captions are enabled automatically — MeetScribe captures and organizes the text in real time
+3. Captions are enabled automatically — Notula for Google Meet captures and organizes the text in real time
 4. Review, export, or copy your transcript at any time
 
 Perfect for keeping meeting minutes, documenting decisions, reviewing what was said, or making calls accessible to team members who couldn't attend.

@@ -1,4 +1,4 @@
-# MeetScribe
+# Notula for Google Meet
 
 Chrome extension for live Google Meet transcription with meeting history.
 
@@ -38,7 +38,7 @@ Then load the project root as an unpacked extension (same steps 3-5 above).
 ## Usage
 
 1. Join a Google Meet call — captions are enabled and captured automatically
-2. Click the MeetScribe icon in the toolbar to toggle the floating transcript popup
+2. Click the Notula icon in the toolbar to toggle the floating transcript popup
 3. Use the sidebar popup to browse past meetings, rename them, or export
 
 ### Export

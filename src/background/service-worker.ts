@@ -42,6 +42,7 @@ import {
   updateNote,
   deleteNote,
 } from '../utils/meeting-store';
+import * as notula from './notula-sync';
 
 // --- Per-session state ---
 
@@ -185,9 +186,25 @@ sessionStateReady.then(async () => {
 
 function updateExtensionIcon(isRecording: boolean): void {
   chrome.action.setTitle({
-    title: isRecording ? 'MeetScribe - Recording' : 'MeetScribe',
+    title: isRecording ? 'Notula - Recording' : 'Notula',
   });
 }
+
+// --- Notula ---
+
+notula.configure((message) => broadcastToPopup(message));
+
+// An update over MeetScribe is told once that the name changed; a fresh
+// install is never told about a name it never used.
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason === 'update') void notula.noteUpdate(details.previousVersion);
+});
+
+// The browser started: one of the three occasions the connection is checked,
+// and the moment a queue left over from yesterday goes out.
+chrome.runtime.onStartup.addListener(() => {
+  void sessionStateReady.then(() => notula.check());
+});
 
 // --- Dynamic popup routing ---
 
@@ -256,10 +273,7 @@ chrome.runtime.onConnect.addListener((port) => {
           // Only end if the session still has the same code (no reconnect happened)
           const s = sessions.get(sessionId);
           if (s && s.meetingCode === code) {
-            if (s.meetingId) {
-              endMeeting(s.meetingId);
-              broadcastToPopup({ type: 'meeting_ended', meetingId: s.meetingId }, sessionId);
-            }
+            if (s.meetingId) finishMeeting(s.meetingId, sessionId);
             // Clean up session
             clearEntries(sessionId);
             sessions.delete(sessionId);
@@ -295,6 +309,21 @@ chrome.runtime.onConnect.addListener((port) => {
       meeting,
       entries: snapshotEntries,
       notes: meeting?.notes ?? [],
+    });
+
+    // The panel opened: what Notula is to it right now, and the check that
+    // may change the answer a moment later.
+    void sessionStateReady.then(async () => {
+      try {
+        port.postMessage({ type: 'notula_snapshot', snapshot: await notula.snapshot() });
+      } catch { /* port gone */ }
+      void notula.check();
+    });
+
+    port.onMessage.addListener((message: { type?: unknown }) => {
+      if (typeof message?.type === 'string' && message.type.startsWith('notula_')) {
+        void notula.handle(message as { type: string } & Record<string, unknown>);
+      }
     });
 
     port.onDisconnect.addListener(() => {
@@ -390,7 +419,24 @@ function ensureMeeting(sessionId: string, meetingCode?: string): string {
   return meeting.id;
 }
 
-function scheduleCaptionStallCheck(sessionId: string): void {
+/**
+ * The end of a meeting. One that ends with nothing in it - a call joined by
+ * mistake, or one whose captions never came - is dropped rather than kept as
+ * an empty card; the rest are closed and offered to Notula.
+ */
+function finishMeeting(meetingId: string, sessionId: string): void {
+  const meeting = getMeeting(meetingId);
+  if (meeting && meeting.entries.length === 0 && meeting.notes.length === 0) {
+    deleteMeeting(meetingId);
+    broadcastToPopup({ type: 'meeting_ended', meetingId }, sessionId);
+    return;
+  }
+  endMeeting(meetingId);
+  broadcastToPopup({ type: 'meeting_ended', meetingId }, sessionId);
+  void notula.onMeetingEnded(meetingId);
+}
+
+function scheduleCaptionStallCheck(sessionId: string, attempt = 1): void {
   // Clear any existing timer for this session
   const existing = captionStallTimers.get(sessionId);
   if (existing) clearTimeout(existing);
@@ -403,6 +449,13 @@ function scheduleCaptionStallCheck(sessionId: string): void {
     const lastTime = lastCaptionTime.get(sessionId) ?? 0;
     if (lastTime > 0) return; // we've received caption data, all good
 
+    // Thirty seconds and a retry that did not help: the panel says what the
+    // transcript reads, instead of standing empty.
+    if (attempt > 1) {
+      broadcastToPopup({ type: 'captions_missing' }, sessionId);
+      return;
+    }
+
     console.debug('[MeetTranscript] No caption data received for session', sessionId, '— requesting caption retry');
     try {
       const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
@@ -412,6 +465,7 @@ function scheduleCaptionStallCheck(sessionId: string): void {
         }
       }
     } catch { /* silent */ }
+    scheduleCaptionStallCheck(sessionId, attempt + 1);
   }, CAPTION_STALL_MS);
   captionStallTimers.set(sessionId, timer);
 }
@@ -482,8 +536,7 @@ async function handleMessage(
         const codeChanged = !effectiveCurrentCode || effectiveCurrentCode !== msg.meetingCode;
         const isNewPageLoad = !meeting || (Date.now() - meeting.startTime > MEETING_CODE_DEDUP_MS);
         if (codeChanged || isNewPageLoad) {
-          endMeeting(session.meetingId);
-          broadcastToPopup({ type: 'meeting_ended', meetingId: session.meetingId }, sessionId);
+          finishMeeting(session.meetingId, sessionId);
           session.meetingId = null;
           if (codeChanged) {
             clearEntries(sessionId);
@@ -846,6 +899,9 @@ async function handleMessage(
     }
 
     default:
+      if (typeof message.type === 'string' && message.type.startsWith('notula_')) {
+        await notula.handle(message as unknown as { type: string } & Record<string, unknown>);
+      }
       break;
   }
 

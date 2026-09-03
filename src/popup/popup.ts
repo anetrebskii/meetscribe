@@ -1,4 +1,16 @@
-import { MSG, type Meeting, type TranscriptEntry, type NoteEntry } from '../utils/types';
+import { MSG, POPUP_PORT_NAME, type Meeting, type TranscriptEntry, type NoteEntry } from '../utils/types';
+import type { PairStage, Snapshot as NotulaSnapshot } from '../background/notula-sync';
+import {
+  AWAITING_POLL_MS,
+  NOTULA_SITE,
+  defaultLine,
+  renderConnect,
+  renderOffers,
+  renderScreen,
+  saveLine,
+  stageAfter,
+} from '../utils/notula-ui';
+import type { NotulaContext, UiStage } from '../utils/notula-ui';
 
 (function () {
   const contentEl = document.getElementById('content')!;
@@ -12,6 +24,120 @@ import { MSG, type Meeting, type TranscriptEntry, type NoteEntry } from '../util
   let currentView: 'list' | 'detail' = 'list';
   let viewingMeetingId: string | null = null;
   let viewingMeetingTitle: string = '';
+
+  // --- Notula ---
+
+  const connectOffer = document.getElementById('connect-offer') as HTMLButtonElement;
+  const connectWait = document.getElementById('connect-wait')!;
+  const offersEl = document.getElementById('offers')!;
+  const screenEl = document.getElementById('screen')!;
+  const defaultEl = document.getElementById('default-line')!;
+  let notulaSnapshot: NotulaSnapshot | null = null;
+  let pairStage: UiStage = 'idle';
+  let pairCode = '';
+  let awaitingTimer: ReturnType<typeof setInterval> | null = null;
+  let screenShown = false;
+
+  // The same port the panel uses, for the same messages. The meeting traffic
+  // on it is for the panel and is ignored here.
+  const port = chrome.runtime.connect(undefined, { name: POPUP_PORT_NAME });
+  const notulaCtx: NotulaContext = {
+    snapshot: () => notulaSnapshot,
+    send: (message) => {
+      try {
+        port.postMessage(message);
+      } catch { /* service worker restarting */ }
+    },
+    container: document.body,
+  };
+
+  function startAwaiting(): void {
+    if (awaitingTimer) return;
+    awaitingTimer = setInterval(() => {
+      const state = notulaSnapshot?.status.state ?? 'notPaired';
+      notulaCtx.send({ type: state === 'notPaired' ? 'notula_pair_start' : 'notula_check' });
+    }, AWAITING_POLL_MS);
+  }
+
+  function stopAwaiting(): void {
+    if (awaitingTimer) clearInterval(awaitingTimer);
+    awaitingTimer = null;
+  }
+
+  function leaveScreen(): void {
+    if (pairStage === 'pairing') notulaCtx.send({ type: 'notula_pair_cancel' });
+    pairStage = 'idle';
+    stopAwaiting();
+    renderNotula();
+  }
+
+  function renderNotula(): void {
+    renderConnect(notulaCtx, connectOffer, connectWait, pairStage);
+    renderOffers(notulaCtx, offersEl);
+    defaultEl.innerHTML = '';
+    const line = defaultLine(notulaCtx);
+    if (line) defaultEl.appendChild(line);
+    defaultEl.hidden = line === null;
+    const show = renderScreen(notulaCtx, screenEl, pairStage, pairCode, {
+      later: leaveScreen,
+      get: () => {
+        void chrome.tabs.create({ url: NOTULA_SITE });
+        pairStage = 'awaiting';
+        startAwaiting();
+        renderNotula();
+      },
+      awaiting: startAwaiting,
+    });
+    const listing = currentView === 'list';
+    if (show) {
+      for (const view of [contentEl, footerEl, offersEl, defaultEl]) view.style.display = 'none';
+      screenShown = true;
+    } else if (screenShown) {
+      screenShown = false;
+      if (pairStage === 'idle' && notulaSnapshot?.status.state !== 'noWorkspace') stopAwaiting();
+      contentEl.style.display = '';
+      offersEl.style.display = listing ? '' : 'none';
+      defaultEl.style.display = listing ? '' : 'none';
+      footerEl.style.display = listing ? 'none' : 'flex';
+    }
+    if (listing && !show) void loadMeetings();
+  }
+
+  port.onMessage.addListener((message: { type?: string } & Record<string, unknown>) => {
+    switch (message.type) {
+      case 'notula_snapshot':
+        notulaSnapshot = message.snapshot as NotulaSnapshot;
+        if (notulaSnapshot.status.state === 'paired' && pairStage === 'awaiting') {
+          pairStage = 'idle';
+          stopAwaiting();
+        }
+        renderNotula();
+        break;
+      case 'notula_save':
+        if (notulaSnapshot) {
+          if (message.save) notulaSnapshot.saves[String(message.meetingId)] = message.save as NotulaSnapshot['saves'][string];
+          else delete notulaSnapshot.saves[String(message.meetingId)];
+        }
+        if (currentView === 'list') void loadMeetings();
+        break;
+      case 'notula_pair':
+        pairStage = stageAfter(pairStage, message.stage as PairStage);
+        if (pairStage === 'pairing') pairCode = String(message.code ?? '');
+        if (pairStage !== 'awaiting') stopAwaiting();
+        renderNotula();
+        break;
+      default:
+        break;
+    }
+  });
+
+  connectOffer.addEventListener('click', () => {
+    connectOffer.disabled = true;
+    notulaCtx.send({ type: 'notula_pair_start' });
+    setTimeout(() => {
+      connectOffer.disabled = false;
+    }, 4000);
+  });
 
   function escapeHtml(str: string): string {
     const div = document.createElement('div');
@@ -27,10 +153,12 @@ import { MSG, type Meeting, type TranscriptEntry, type NoteEntry } from '../util
 
   function showList(): void {
     currentView = 'list';
-    headerTitle.textContent = 'MeetScribe';
+    headerTitle.textContent = 'Notula';
     btnBack.style.display = 'none';
     headerActions.style.display = 'none';
     footerEl.style.display = 'none';
+    offersEl.style.display = '';
+    defaultEl.style.display = '';
     viewingMeetingId = null;
     viewingMeetingTitle = '';
     loadMeetings();
@@ -43,6 +171,8 @@ import { MSG, type Meeting, type TranscriptEntry, type NoteEntry } from '../util
     headerTitle.textContent = title;
     btnBack.style.display = 'block';
     headerActions.style.display = 'flex';
+    offersEl.style.display = 'none';
+    defaultEl.style.display = 'none';
     loadDetail(meetingId);
   }
 
@@ -77,6 +207,19 @@ import { MSG, type Meeting, type TranscriptEntry, type NoteEntry } from '../util
     }).catch(() => {});
   });
 
+  function download(content: string, title: string, startTime: number): void {
+    const blob = new Blob([content], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim();
+    const d = new Date(startTime);
+    const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+    a.download = `${safeName} ${dateStr}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   detailExportBtn.addEventListener('click', () => {
     if (!viewingMeetingId) return;
     chrome.runtime.sendMessage({
@@ -84,16 +227,7 @@ import { MSG, type Meeting, type TranscriptEntry, type NoteEntry } from '../util
       payload: { id: viewingMeetingId, format: 'md' },
     }).then((response) => {
       if (response?.content) {
-        const blob = new Blob([response.content], { type: 'text/markdown' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        const title = (response.title ?? viewingMeetingTitle).replace(/[^a-zA-Z0-9 _-]/g, '').trim();
-        const d = new Date(response.startTime ?? Date.now());
-        const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
-        a.download = `${title} ${dateStr}.md`;
-        a.click();
-        URL.revokeObjectURL(url);
+        download(response.content, response.title ?? viewingMeetingTitle, response.startTime ?? Date.now());
       }
     }).catch(() => {});
   });
@@ -164,6 +298,11 @@ import { MSG, type Meeting, type TranscriptEntry, type NoteEntry } from '../util
     const titleEl = item.querySelector('.meeting-item-title') as HTMLElement;
     const actionsEl = item.querySelector('.meeting-item-actions') as HTMLElement;
 
+    if (!isLive) {
+      const line = saveLine(notulaCtx, m);
+      if (line) item.appendChild(line);
+    }
+
     // --- Action button handlers ---
 
     actionsEl.addEventListener('click', (e) => {
@@ -216,16 +355,7 @@ import { MSG, type Meeting, type TranscriptEntry, type NoteEntry } from '../util
           payload: { id: m.id, format: 'md' },
         }).then((response) => {
           if (response?.content) {
-            const blob = new Blob([response.content], { type: 'text/markdown' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            const title = (response.title ?? m.title).replace(/[^a-zA-Z0-9 _-]/g, '').trim();
-            const d = new Date(response.startTime ?? m.startTime);
-            const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
-            a.download = `${title} ${dateStr}.md`;
-            a.click();
-            URL.revokeObjectURL(url);
+            download(response.content, response.title ?? m.title, response.startTime ?? m.startTime);
           }
         }).catch(() => {});
       }
@@ -265,6 +395,7 @@ import { MSG, type Meeting, type TranscriptEntry, type NoteEntry } from '../util
     item.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).getAttribute('contenteditable') === 'true') return;
       if ((e.target as HTMLElement).closest('.meeting-item-actions')) return;
+      if ((e.target as HTMLElement).closest('.where')) return;
 
       if (isLive) {
         // Focus the Meet tab
@@ -336,7 +467,7 @@ import { MSG, type Meeting, type TranscriptEntry, type NoteEntry } from '../util
       if (entries.length === 0 && meetingNotes.length === 0) {
         contentEl.innerHTML = '<div class="empty-state">No transcription entries</div>';
         footerEl.style.display = 'flex';
-        footerLeft.textContent = '0 entries';
+        footerLeft.textContent = '0 lines';
         return;
       }
 
@@ -367,7 +498,7 @@ import { MSG, type Meeting, type TranscriptEntry, type NoteEntry } from '../util
       contentEl.appendChild(container);
 
       footerEl.style.display = 'flex';
-      footerLeft.textContent = `${entries.length} entries`;
+      footerLeft.textContent = `${entries.length} line${entries.length === 1 ? '' : 's'}${meetingNotes.length > 0 ? ` \u00b7 ${meetingNotes.length} note${meetingNotes.length === 1 ? '' : 's'}` : ''}`;
     } catch {
       contentEl.innerHTML = '<div class="empty-state">Failed to load meeting</div>';
     }

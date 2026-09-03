@@ -1,6 +1,21 @@
 import { MSG, POPUP_PORT_NAME, type TranscriptEntry, type NoteEntry, type Meeting } from '../utils/types';
 import { LANGUAGE_CODES } from '../utils/constants';
 import { exportAsMarkdown } from '../utils/transcript-store';
+import type { Snapshot as NotulaSnapshot, PairStage } from '../background/notula-sync';
+import {
+  AWAITING_POLL_MS,
+  LINK_ICON,
+  NOTULA_SITE,
+  connected,
+  destinationFor,
+  renderConnect,
+  renderOffers,
+  renderScreen as renderNotulaScreen,
+  saveLine,
+  stageAfter,
+  whereLine,
+} from '../utils/notula-ui';
+import type { NotulaContext, UiStage } from '../utils/notula-ui';
 
 (function () {
   const STORAGE_POS_KEY = 'popup_position';
@@ -66,6 +81,16 @@ import { exportAsMarkdown } from '../utils/transcript-store';
   let popupWidth = DEFAULT_WIDTH;
   let popupHeight = DEFAULT_HEIGHT;
 
+  // --- Notula: what the service worker last said, and which screen is up ---
+
+  let notulaSnapshot: NotulaSnapshot | null = null;
+  let pairStage: UiStage = 'idle';
+  let pairCode = '';
+  let awaitingTimer: ReturnType<typeof setInterval> | null = null;
+  let captionsMissing = false;
+  let screenShown = false;
+  let footerWhereKey = '';
+
   // --- Shadow DOM setup ---
 
   const host = document.createElement('div');
@@ -85,7 +110,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
   container.innerHTML = `
     <div class="header" id="header">
       <div class="drag-handle" id="drag-handle">
-        <span class="title"><span class="title-prefix">MeetScribe</span> <span class="title-sep">–</span> <span class="title-page" id="popup-title">Live</span></span>
+        <span class="title"><span class="title-prefix">Notula</span> <span class="title-sep">–</span> <span class="title-page" id="popup-title">Live</span></span>
       </div>
       <div class="header-actions">
         <button class="btn-icon" id="btn-meetings" title="Meetings">
@@ -97,6 +122,8 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         <button class="btn-icon" id="btn-close" title="Close">&#215;</button>
       </div>
     </div>
+    <button class="connect" id="connect-offer" hidden>${LINK_ICON}<span>Save to your Git repo via Notula</span></button>
+    <div class="connect warning" id="connect-wait" hidden>Waiting for Notula</div>
     <div class="body" id="body">
       <div class="toolbar" id="toolbar">
         <select class="lang-select" id="lang-select"></select>
@@ -107,6 +134,8 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         <button class="btn-back-live" id="btn-back-live">&larr; Meetings</button>
       </div>
       <div class="content-area" id="content-area">
+        <div class="offers" id="offers"></div>
+        <div class="screen" id="screen" hidden></div>
         <div class="live-sections" id="live-sections">
           <div class="section" id="section-notes">
             <div class="section-header" id="section-notes-header">
@@ -115,7 +144,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
             </div>
             <div class="section-body" id="section-notes-body">
               <div class="notes-input-row">
-                <input type="text" class="notes-input" id="notes-input" placeholder="Add a note..." />
+                <input type="text" class="notes-input" id="notes-input" placeholder="Add a note…" />
                 <button class="btn-small btn-add-note" id="btn-add-note">Add</button>
               </div>
               <div class="notes-list" id="notes-list"></div>
@@ -127,6 +156,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
               <span class="section-chevron">&#9660;</span>
             </div>
             <div class="section-body" id="section-transcript-body">
+              <div class="placeholder" id="transcript-placeholder" hidden>Listening…</div>
               <div class="transcript" id="transcript"></div>
             </div>
           </div>
@@ -135,7 +165,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         <div class="detail-view" id="detail-view" style="display:none"></div>
       </div>
       <div class="footer" id="footer">
-        <span id="footer-left">0 entries</span>
+        <span id="footer-left">0 lines</span>
         <span id="footer-right"></span>
       </div>
     </div>
@@ -178,6 +208,17 @@ import { exportAsMarkdown } from '../utils/transcript-store';
   const notesInput = shadow.getElementById('notes-input') as HTMLInputElement;
   const btnAddNote = shadow.getElementById('btn-add-note')!;
   const notesList = shadow.getElementById('notes-list')!;
+  const connectOffer = shadow.getElementById('connect-offer') as HTMLButtonElement;
+  const connectWait = shadow.getElementById('connect-wait')!;
+  const offersEl = shadow.getElementById('offers')!;
+  const screenEl = shadow.getElementById('screen')!;
+  const placeholderEl = shadow.getElementById('transcript-placeholder')!;
+
+  const notulaCtx: NotulaContext = {
+    snapshot: () => notulaSnapshot,
+    send: (message) => sendNotula(message),
+    container,
+  };
 
   btnBackLive.addEventListener('click', () => {
     switchView('meetings');
@@ -565,35 +606,49 @@ import { exportAsMarkdown } from '../utils/transcript-store';
     } catch { /* silent */ }
   });
 
+  function download(content: string, title: string, startTime: number): void {
+    const blob = new Blob([content], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim();
+    const d = new Date(startTime);
+    const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+    a.download = `${safeName} ${dateStr}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   btnExport.addEventListener('click', async () => {
     try {
       const response = await getExportResponse();
       if (response?.content) {
-        const blob = new Blob([response.content], { type: 'text/markdown' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        const title = response.title ?? currentMeeting?.title ?? 'Meeting Transcript';
-        const safeName = title.replace(/[^a-zA-Z0-9 _-]/g, '').trim();
-        const d = new Date(response.startTime ?? currentMeeting?.startTime ?? Date.now());
-        const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
-        a.download = `${safeName} ${dateStr}.md`;
-        a.click();
-        URL.revokeObjectURL(url);
+        download(
+          response.content,
+          response.title ?? currentMeeting?.title ?? 'Meeting Transcript',
+          response.startTime ?? currentMeeting?.startTime ?? Date.now(),
+        );
       }
     } catch { /* silent */ }
   });
 
   // --- View switching ---
 
-  function switchView(view: typeof currentView): void {
-    currentView = view;
+  function applyViewDisplays(): void {
+    const view = currentView;
     liveSections.style.display = view === 'live' ? '' : 'none';
     meetingsEl.style.display = view === 'meetings' ? '' : 'none';
     detailEl.style.display = view === 'meeting-detail' ? '' : 'none';
     toolbarEl.style.display = (view === 'live' || view === 'meeting-detail') ? '' : 'none';
     langSelect.style.display = view === 'live' ? '' : 'none';
     backNav.style.display = (view === 'live' || view === 'meeting-detail') ? '' : 'none';
+    footerEl.style.display = '';
+    offersEl.style.display = view === 'meeting-detail' ? 'none' : '';
+  }
+
+  function switchView(view: typeof currentView): void {
+    currentView = view;
+    applyViewDisplays();
 
     btnMeetings.classList.toggle('active', view === 'meetings' || view === 'meeting-detail');
 
@@ -612,6 +667,8 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         // title set by loadMeetingDetail
         break;
     }
+    renderOffers(notulaCtx, offersEl);
+    renderScreen();
   }
 
   // --- Toggle popup visibility (from toolbar icon) ---
@@ -623,6 +680,8 @@ import { exportAsMarkdown } from '../utils/transcript-store';
       if (!isHidden && !port) {
         connectPort();
       }
+      // The panel was opened: one of the three occasions Notula is asked after.
+      if (!isHidden) sendNotula({ type: 'notula_check' });
     }
   });
 
@@ -738,9 +797,19 @@ import { exportAsMarkdown } from '../utils/transcript-store';
     return div;
   }
 
+  function renderPlaceholder(): void {
+    const empty = entries.length === 0 && currentMeeting !== null;
+    placeholderEl.hidden = !empty;
+    placeholderEl.textContent = captionsMissing
+      ? 'Turn on captions in Meet - that is what the transcript reads.'
+      : 'Listening…';
+  }
+
   function appendEntry(entry: TranscriptEntry): void {
     // Only append if viewing live
     if (currentView !== 'live') return;
+    captionsMissing = false;
+    renderPlaceholder();
     transcriptEl.appendChild(renderEntry(entry));
     updateFooter();
     if (autoScroll) {
@@ -767,6 +836,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
     for (const entry of entries) {
       transcriptEl.appendChild(renderEntry(entry));
     }
+    renderPlaceholder();
     updateFooter();
     if (autoScroll) {
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
@@ -775,9 +845,23 @@ import { exportAsMarkdown } from '../utils/transcript-store';
 
   function updateFooter(): void {
     if (currentView !== 'live' && currentView !== 'meeting-detail') return;
-    footerLeft.textContent = `${entries.length} entries`;
+    const lines = currentView === 'live' ? entries.length : detailEntries.length;
+    const noteCount = currentView === 'live' ? notes.length : detailNotes.length;
+    footerLeft.textContent = `${lines} line${lines === 1 ? '' : 's'}${noteCount > 0 ? ` \u00b7 ${noteCount} note${noteCount === 1 ? '' : 's'}` : ''}`;
 
     const meeting = currentView === 'live' ? currentMeeting : null;
+    // Where this call will land, said before the file exists rather than after.
+    if (meeting && connected(notulaCtx)) {
+      const dest = destinationFor(notulaSnapshot, meeting.meetingCode);
+      const key = `${meeting.id}:${dest?.workspace ?? ''}:${dest?.folder ?? ''}`;
+      if (footerWhereKey !== key) {
+        footerWhereKey = key;
+        footerRight.innerHTML = '';
+        footerRight.appendChild(whereLine(notulaCtx, { text: 'Will be saved to', dest, code: meeting.meetingCode, meetingId: meeting.id }));
+      }
+      return;
+    }
+    footerWhereKey = '';
     const parts: string[] = [];
     if (participantCount > 0) {
       parts.push(`${participantCount} participant${participantCount !== 1 ? 's' : ''}`);
@@ -866,6 +950,13 @@ import { exportAsMarkdown } from '../utils/transcript-store';
     const titleEl = item.querySelector('.meeting-item-title') as HTMLElement;
     const actionsEl = item.querySelector('.meeting-item-actions') as HTMLElement;
 
+    // Under the name: where the call went, or why it did not. Never on the
+    // live one, whose line is the footer.
+    if (!isCurrent) {
+      const line = saveLine(notulaCtx, m);
+      if (line) item.appendChild(line);
+    }
+
     // --- Action button handlers ---
 
     actionsEl.addEventListener('click', (e) => {
@@ -902,16 +993,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
           payload: { id: m.id, format: 'md' },
         }).then((response) => {
           if (response?.content) {
-            const blob = new Blob([response.content], { type: 'text/markdown' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            const title = (response.title ?? m.title).replace(/[^a-zA-Z0-9 _-]/g, '').trim();
-            const d = new Date(response.startTime ?? m.startTime);
-            const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
-            a.download = `${title} ${dateStr}.md`;
-            a.click();
-            URL.revokeObjectURL(url);
+            download(response.content, response.title ?? m.title, response.startTime ?? m.startTime);
           }
         }).catch(() => {});
       }
@@ -960,6 +1042,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
       // Don't navigate if clicking on rename input or action buttons
       if ((e.target as HTMLElement).getAttribute('contenteditable') === 'true') return;
       if ((e.target as HTMLElement).closest('.meeting-item-actions')) return;
+      if ((e.target as HTMLElement).closest('.where')) return;
 
       if (isCurrent) {
         switchView('live');
@@ -1039,7 +1122,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
 
       if (meetingEntries.length === 0) {
         detailEl.innerHTML = '<div class="empty-state">No transcription entries</div>';
-        footerLeft.textContent = '0 entries';
+        footerLeft.textContent = '0 lines';
         footerRight.textContent = '';
         return;
       }
@@ -1071,12 +1154,86 @@ import { exportAsMarkdown } from '../utils/transcript-store';
       }
       detailEl.appendChild(entriesContainer);
 
-      footerLeft.textContent = `${meetingEntries.length} entries`;
+      updateFooter();
       footerRight.textContent = '';
     } catch {
       detailEl.innerHTML = '<div class="empty-state">Failed to load meeting</div>';
     }
   }
+
+  // --- Notula ---
+
+  function sendNotula(message: Record<string, unknown>): void {
+    try {
+      port?.postMessage(message);
+    } catch { /* reconnecting */ }
+  }
+
+  function startAwaiting(): void {
+    if (awaitingTimer) return;
+    awaitingTimer = setInterval(() => {
+      const state = notulaSnapshot?.status.state ?? 'notPaired';
+      sendNotula({ type: state === 'notPaired' ? 'notula_pair_start' : 'notula_check' });
+    }, AWAITING_POLL_MS);
+  }
+
+  function stopAwaiting(): void {
+    if (awaitingTimer) clearInterval(awaitingTimer);
+    awaitingTimer = null;
+  }
+
+  function leaveScreen(): void {
+    if (pairStage === 'pairing') sendNotula({ type: 'notula_pair_cancel' });
+    pairStage = 'idle';
+    stopAwaiting();
+    renderNotula();
+  }
+
+  /** A screen takes the whole panel; when it goes, the view it covered comes back. */
+  function renderScreen(): void {
+    const show = renderNotulaScreen(notulaCtx, screenEl, pairStage, pairCode, {
+      later: leaveScreen,
+      get: () => {
+        window.open(NOTULA_SITE, '_blank', 'noopener');
+        pairStage = 'awaiting';
+        startAwaiting();
+        renderNotula();
+      },
+      awaiting: startAwaiting,
+    });
+    if (show) {
+      for (const view of [liveSections, meetingsEl, detailEl, toolbarEl, backNav, footerEl, offersEl]) view.style.display = 'none';
+      screenShown = true;
+    } else if (screenShown) {
+      screenShown = false;
+      if (pairStage === 'idle' && notulaSnapshot?.status.state !== 'noWorkspace') stopAwaiting();
+      applyViewDisplays();
+    }
+  }
+
+  function renderNotula(): void {
+    renderConnect(notulaCtx, connectOffer, connectWait, pairStage);
+    renderOffers(notulaCtx, offersEl);
+    renderScreen();
+    footerWhereKey = '';
+    updateFooter();
+    if (currentView === 'meetings') void loadMeetingsList();
+  }
+
+  function onPairStage(stage: PairStage, code: string | undefined): void {
+    pairStage = stageAfter(pairStage, stage);
+    if (pairStage === 'pairing') pairCode = code ?? '';
+    if (pairStage !== 'awaiting') stopAwaiting();
+    renderNotula();
+  }
+
+  connectOffer.addEventListener('click', () => {
+    connectOffer.disabled = true;
+    sendNotula({ type: 'notula_pair_start' });
+    setTimeout(() => {
+      connectOffer.disabled = false;
+    }, 4000);
+  });
 
   // --- Communication with service worker ---
 
@@ -1095,6 +1252,32 @@ import { exportAsMarkdown } from '../utils/transcript-store';
 
       port.onMessage.addListener((message) => {
         switch (message.type) {
+          case 'notula_snapshot':
+            notulaSnapshot = message.snapshot as NotulaSnapshot;
+            if (notulaSnapshot.status.state === 'paired' && pairStage === 'awaiting') {
+              pairStage = 'idle';
+              stopAwaiting();
+            }
+            renderNotula();
+            break;
+
+          case 'notula_save':
+            if (notulaSnapshot) {
+              if (message.save) notulaSnapshot.saves[message.meetingId] = message.save as NotulaSnapshot['saves'][string];
+              else delete notulaSnapshot.saves[message.meetingId];
+            }
+            renderNotula();
+            break;
+
+          case 'notula_pair':
+            onPairStage(message.stage as PairStage, message.code);
+            break;
+
+          case 'captions_missing':
+            captionsMissing = true;
+            renderPlaceholder();
+            break;
+
           case 'meeting_snapshot':
             currentMeeting = message.meeting;
             entries = message.entries ?? [];
@@ -1132,7 +1315,9 @@ import { exportAsMarkdown } from '../utils/transcript-store';
             currentMeeting = message.meeting;
             participantCount = 0;
             notes = [];
+            captionsMissing = false;
             renderAllNotes();
+            renderPlaceholder();
             if (currentView === 'live') {
               popupTitle.textContent = currentMeeting?.title ?? 'Live';
             }
@@ -1143,6 +1328,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
             participantCount = 0;
             notes = [];
             renderAllNotes();
+            renderPlaceholder();
             if (currentView === 'live') {
               popupTitle.textContent = 'Live';
               updateFooter();
@@ -1174,6 +1360,7 @@ import { exportAsMarkdown } from '../utils/transcript-store';
             notes.unshift(message.note);
             if (currentView === 'live') {
               notesList.prepend(renderNoteItem(message.note));
+              updateFooter();
             }
             break;
 
@@ -1297,20 +1484,78 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         padding: 0;
       }
 
+      [hidden] {
+        display: none !important;
+      }
+
+      /* Notula's palette, inlined: the panel lives inside somebody else's page
+         and cannot import the app's stylesheet, so the same tokens are written
+         here once, light and dark, and every rule below reads them. */
       .popup {
-        width: ${DEFAULT_WIDTH}px;
-        height: ${DEFAULT_HEIGHT}px;
-        background: rgba(32, 33, 36, 0.95);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 12px;
-        color: #e8eaed;
-        font-family: 'Google Sans', Roboto, Arial, sans-serif;
-        font-size: 13px;
+        --bg: #fdfdfb;
+        --bg-sunken: #f6f5f1;
+        --bg-raised: #fffffd;
+        --bg-hover: rgba(28, 28, 26, 0.05);
+        --bg-active: rgba(176, 86, 58, 0.12);
+        --border: #e2e0d8;
+        --border-strong: #cfccc0;
+        --text: #1c1c1a;
+        --text-dim: #6f6d65;
+        --text-faint: #8b8981;
+        --accent: #b0563a;
+        --accent-text: #fff;
+        --warning-bg: #f6ecd8;
+        --warning-border: #e0cb96;
+        --warning-text: #6b5312;
+        --danger: #a83a2a;
+        --comment: rgba(176, 86, 58, 0.18);
+        --comment-strong: rgba(176, 86, 58, 0.38);
+        --shadow: 0 1px 2px rgba(28, 28, 26, 0.05), 0 8px 24px -14px rgba(28, 28, 26, 0.28);
+        --font-ui: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+        --font-code: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+        --radius: 6px;
+        --radius-lg: 10px;
+        --quick: 120ms;
+        --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+        position: relative;
         display: flex;
         flex-direction: column;
+        width: ${DEFAULT_WIDTH}px;
+        height: ${DEFAULT_HEIGHT}px;
         overflow: hidden;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-        position: relative;
+        font-family: var(--font-ui);
+        font-size: 12px;
+        line-height: 1.4;
+        color: var(--text);
+        background: var(--bg-raised);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .popup {
+          --bg: #1c1c1a;
+          --bg-sunken: #171715;
+          --bg-raised: #22221f;
+          --bg-hover: rgba(242, 241, 236, 0.06);
+          --bg-active: rgba(210, 121, 90, 0.18);
+          --border: #383833;
+          --border-strong: #4c4c45;
+          --text: #f2f1ec;
+          --text-dim: #a3a199;
+          --text-faint: #7d7b73;
+          --accent: #d2795a;
+          --accent-text: #1c1c1a;
+          --warning-bg: #3a3222;
+          --warning-border: #5c4f2e;
+          --warning-text: #e3cb96;
+          --danger: #e08476;
+          --comment: rgba(210, 121, 90, 0.2);
+          --comment-strong: rgba(210, 121, 90, 0.42);
+          --shadow: 0 8px 30px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.4);
+        }
       }
 
       .popup.minimized {
@@ -1319,22 +1564,38 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         min-width: 160px;
       }
 
+      button {
+        font: inherit;
+        color: inherit;
+        background: none;
+        border: 0;
+        cursor: pointer;
+      }
+
+      button:focus-visible,
+      input:focus-visible,
+      select:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
       .header {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 8px 12px;
-        background: rgba(255, 255, 255, 0.05);
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        min-height: 40px;
+        gap: 8px;
+        min-height: 36px;
+        padding: 6px 10px;
+        border-bottom: 1px solid var(--border);
         flex-shrink: 0;
       }
 
       .drag-handle {
-        cursor: grab;
         flex: 1;
-        user-select: none;
+        min-width: 0;
         overflow: hidden;
+        cursor: grab;
+        user-select: none;
       }
 
       .drag-handle:active {
@@ -1342,96 +1603,147 @@ import { exportAsMarkdown } from '../utils/transcript-store';
       }
 
       .title {
-        font-weight: 500;
-        font-size: 13px;
-        letter-spacing: 0.3px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
         display: block;
+        overflow: hidden;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        white-space: nowrap;
+        text-overflow: ellipsis;
         outline: none;
-        border-radius: 3px;
+        border-radius: 4px;
         padding: 1px 3px;
         margin: -1px -3px;
       }
 
       .title-prefix {
-        opacity: 0.5;
+        color: var(--text);
       }
+
       .title-sep {
-        opacity: 0.3;
+        color: var(--text-faint);
       }
+
       .title-page {
+        font-weight: 500;
+        color: var(--text-dim);
         outline: none;
-        border-radius: 3px;
+        border-radius: 4px;
         padding: 1px 3px;
         margin: -1px -3px;
       }
+
       .title-page[contenteditable="true"] {
-        background: rgba(255, 255, 255, 0.08);
-        outline: 1px solid #8ab4f8;
+        color: var(--text);
+        background: var(--bg-sunken);
+        outline: 1px solid var(--accent);
         white-space: normal;
         cursor: text;
       }
 
       .autocomplete-list {
         position: absolute;
-        background: #35363a;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 6px;
+        z-index: 1000;
         max-height: 120px;
         overflow-y: auto;
-        z-index: 1000;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        padding: 4px;
+        background: var(--bg-raised);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
       }
-      .autocomplete-list:empty { display: none; }
+
+      .autocomplete-list:empty {
+        display: none;
+      }
+
       .autocomplete-item {
-        padding: 5px 10px;
-        font-size: 12px;
-        color: #e8eaed;
-        cursor: pointer;
-        white-space: nowrap;
+        padding: 5px 8px;
         overflow: hidden;
+        font-size: 12px;
+        color: var(--text);
+        white-space: nowrap;
         text-overflow: ellipsis;
+        border-radius: 4px;
+        cursor: pointer;
       }
+
       .autocomplete-item:hover,
       .autocomplete-item.active {
-        background: rgba(138, 180, 248, 0.15);
+        background: var(--bg-hover);
       }
 
       .header-actions {
         display: flex;
-        gap: 4px;
+        gap: 2px;
         flex-shrink: 0;
       }
 
       .btn-icon {
-        background: none;
-        border: none;
-        color: #9aa0a6;
-        cursor: pointer;
-        width: 24px;
-        height: 24px;
-        border-radius: 50%;
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: 16px;
-        transition: background 0.15s, color 0.15s;
+        width: 24px;
+        height: 24px;
+        font-size: 15px;
+        color: var(--text-dim);
+        border-radius: 5px;
+        transition: background-color var(--quick) var(--ease), color var(--quick) var(--ease);
       }
 
       .btn-icon:hover {
-        background: rgba(255, 255, 255, 0.1);
-        color: #e8eaed;
+        color: var(--text);
+        background: var(--bg-hover);
       }
 
       .btn-icon.active {
-        color: #8ab4f8;
+        color: var(--accent);
+        background: var(--bg-active);
       }
 
       .btn-icon svg {
         width: 14px;
         height: 14px;
+      }
+
+      /* The connection line under the header. An offer is a button; a wait is
+         a band with nothing to press, because there is nothing to do. */
+      .connect {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 6px 10px;
+        font-size: 11px;
+        text-align: start;
+        color: var(--accent);
+        background: var(--bg-sunken);
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+        transition: background-color var(--quick) var(--ease);
+      }
+
+      .connect:hover {
+        background: var(--bg-hover);
+      }
+
+      .connect:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
+      .connect.warning,
+      .connect.warning:hover {
+        color: var(--warning-text);
+        background: var(--warning-bg);
+        border-bottom-color: var(--warning-border);
+        cursor: default;
+      }
+
+      .connect svg {
+        flex: none;
+        width: 12px;
+        height: 12px;
       }
 
       .body {
@@ -1444,77 +1756,75 @@ import { exportAsMarkdown } from '../utils/transcript-store';
 
       .toolbar {
         display: flex;
-        gap: 8px;
-        padding: 8px 12px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-bottom: 1px solid var(--border);
         flex-shrink: 0;
       }
 
       .lang-select {
         flex: 1;
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 6px;
-        color: #e8eaed;
-        padding: 4px 8px;
-        font-size: 12px;
-        cursor: pointer;
+        min-width: 0;
+        height: 26px;
+        padding: 0 8px;
+        font: inherit;
+        font-size: 11px;
+        color: var(--text-dim);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
         outline: none;
+        cursor: pointer;
       }
 
       .lang-select:focus {
-        border-color: #8ab4f8;
+        border-color: var(--accent);
       }
 
       .lang-select option {
-        background: #303134;
-        color: #e8eaed;
+        color: var(--text);
+        background: var(--bg-raised);
       }
 
       .btn-small {
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 6px;
-        color: #8ab4f8;
-        padding: 4px 10px;
-        font-size: 12px;
-        cursor: pointer;
-        transition: background 0.15s;
+        height: 26px;
+        padding: 0 10px;
+        font-size: 11px;
+        color: var(--text-dim);
         white-space: nowrap;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        transition: background-color var(--quick) var(--ease), color var(--quick) var(--ease);
       }
 
       .btn-small:hover {
-        background: rgba(138, 180, 248, 0.15);
-      }
-
-      .btn-small.active {
-        background: rgba(138, 180, 248, 0.2);
-        border-color: #8ab4f8;
+        color: var(--text);
+        background: var(--bg-hover);
       }
 
       .toolbar-action {
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 6px;
-        color: #9aa0a6;
-        cursor: pointer;
-        width: 28px;
-        height: 28px;
         display: flex;
         align-items: center;
         justify-content: center;
-        transition: background 0.15s, color 0.15s;
-        padding: 0;
         flex-shrink: 0;
+        width: 26px;
+        height: 26px;
+        padding: 0;
+        color: var(--text-dim);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        transition: background-color var(--quick) var(--ease), color var(--quick) var(--ease);
       }
 
       .toolbar-action:hover {
-        background: rgba(138, 180, 248, 0.15);
-        color: #e8eaed;
+        color: var(--text);
+        background: var(--bg-hover);
       }
 
       .section {
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        border-bottom: 1px solid var(--border);
       }
 
       .section:last-child {
@@ -1525,72 +1835,57 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 6px 12px;
+        padding: 6px 10px;
         cursor: pointer;
         user-select: none;
-        transition: background 0.15s;
+        transition: background-color var(--quick) var(--ease);
       }
 
       .section-header:hover {
-        background: rgba(255, 255, 255, 0.04);
+        background: var(--bg-hover);
       }
 
       .section-title {
         font-size: 11px;
         font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        color: #9aa0a6;
-      }
-
-      #section-notes .section-title {
-        color: #fbbc04;
-      }
-
-      #section-transcript .section-title {
-        color: #8ab4f8;
+        color: var(--text-dim);
       }
 
       .section-chevron {
         font-size: 9px;
-        color: #9aa0a6;
-        transition: transform 0.15s;
-      }
-
-      .section-header.collapsed .section-chevron {
-        transform: rotate(0);
+        color: var(--text-faint);
       }
 
       .section-body {
-        padding: 0 12px 8px;
+        padding: 0 10px 8px;
       }
 
       .notes-input-row {
         display: flex;
         gap: 6px;
         margin-bottom: 6px;
-        align-items: flex-end;
       }
 
       .notes-input {
         flex: 1;
         min-width: 0;
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 6px;
-        color: #e8eaed;
-        padding: 4px 8px;
+        height: 26px;
+        padding: 0 8px;
+        font: inherit;
         font-size: 12px;
-        font-family: inherit;
+        color: var(--text);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
         outline: none;
       }
 
       .notes-input:focus {
-        border-color: #8ab4f8;
+        border-color: var(--accent);
       }
 
       .notes-input::placeholder {
-        color: #9aa0a6;
+        color: var(--text-faint);
       }
 
       .btn-add-note {
@@ -1603,72 +1898,73 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         gap: 4px;
       }
 
+      /* A note is the person's own words over the call, marked the way a
+         comment marks a passage in Notula - the same tint, not a second colour. */
       .note-item {
         display: flex;
         align-items: flex-start;
         gap: 6px;
-        padding: 4px 6px;
-        background: rgba(251, 188, 4, 0.08);
-        border-radius: 6px;
+        padding: 4px 6px 4px 8px;
         font-size: 12px;
-        border-left: 2px solid rgba(251, 188, 4, 0.5);
+        background: var(--comment);
+        border-left: 2px solid var(--comment-strong);
+        border-radius: 0 var(--radius) var(--radius) 0;
       }
 
       .note-time {
-        color: #9aa0a6;
-        font-size: 10px;
         flex-shrink: 0;
         margin-top: 1px;
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+        color: var(--text-faint);
       }
 
       .note-text {
         flex: 1;
-        color: #e8eaed;
-        word-break: break-word;
-        line-height: 1.3;
-        cursor: text;
-        border-radius: 3px;
         padding: 0 2px;
+        line-height: 1.4;
+        color: var(--text);
+        word-break: break-word;
+        border-radius: 3px;
         outline: none;
+        cursor: text;
       }
 
       .note-text[contenteditable="true"] {
-        background: rgba(255, 255, 255, 0.08);
-        outline: 1px solid #8ab4f8;
+        background: var(--bg-raised);
+        outline: 1px solid var(--accent);
       }
 
       .note-delete {
-        background: none;
-        border: none;
-        color: #9aa0a6;
-        cursor: pointer;
-        font-size: 10px;
-        padding: 0 2px;
         flex-shrink: 0;
+        padding: 0 2px;
+        font-size: 10px;
+        color: var(--text-faint);
         opacity: 0;
-        transition: opacity 0.15s, color 0.15s;
+        transition: opacity var(--quick) var(--ease), color var(--quick) var(--ease);
       }
 
-      .note-item:hover .note-delete {
+      .note-item:hover .note-delete,
+      .note-delete:focus-visible {
         opacity: 1;
       }
 
       .note-delete:hover {
-        color: #f28b82;
+        color: var(--danger);
       }
 
       .content-area {
+        display: flex;
+        flex-direction: column;
         flex: 1;
         min-height: 0;
         overflow: hidden;
-        display: flex;
-        flex-direction: column;
       }
 
       .live-sections {
-        flex: 1;
         display: flex;
         flex-direction: column;
+        flex: 1;
         min-height: 0;
         overflow: hidden;
       }
@@ -1682,80 +1978,74 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         overflow-y: auto;
       }
 
-      #section-notes .section-body::-webkit-scrollbar {
-        width: 4px;
-      }
-      #section-notes .section-body::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      #section-notes .section-body::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.15);
-        border-radius: 2px;
-      }
-
       #section-transcript {
-        flex: 1;
         display: flex;
         flex-direction: column;
+        flex: 1;
         min-height: 0;
         overflow: hidden;
       }
 
       #section-transcript .section-body {
+        display: flex;
+        flex-direction: column;
         flex: 1;
         min-height: 0;
         overflow: hidden;
-        display: flex;
-        flex-direction: column;
       }
 
       .transcript {
         flex: 1;
+        padding: 0;
         overflow-y: auto;
         scroll-behavior: smooth;
-        padding: 0;
       }
 
-      .transcript::-webkit-scrollbar {
-        width: 4px;
-      }
-      .transcript::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      .transcript::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.15);
-        border-radius: 2px;
+      .placeholder {
+        padding: 24px 10px;
+        font-size: 11px;
+        text-align: center;
+        color: var(--text-faint);
       }
 
       .meetings-view,
       .detail-view {
         flex: 1;
+        padding: 6px 6px 8px;
         overflow-y: auto;
         scroll-behavior: smooth;
-        padding: 8px 12px;
       }
 
+      #section-notes .section-body::-webkit-scrollbar,
+      .transcript::-webkit-scrollbar,
       .meetings-view::-webkit-scrollbar,
-      .detail-view::-webkit-scrollbar {
+      .detail-view::-webkit-scrollbar,
+      .menu::-webkit-scrollbar {
         width: 4px;
       }
 
+      #section-notes .section-body::-webkit-scrollbar-track,
+      .transcript::-webkit-scrollbar-track,
       .meetings-view::-webkit-scrollbar-track,
-      .detail-view::-webkit-scrollbar-track {
+      .detail-view::-webkit-scrollbar-track,
+      .menu::-webkit-scrollbar-track {
         background: transparent;
       }
 
+      #section-notes .section-body::-webkit-scrollbar-thumb,
+      .transcript::-webkit-scrollbar-thumb,
       .meetings-view::-webkit-scrollbar-thumb,
-      .detail-view::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.15);
+      .detail-view::-webkit-scrollbar-thumb,
+      .menu::-webkit-scrollbar-thumb {
+        background: var(--border-strong);
         border-radius: 2px;
       }
 
       .entry {
-        margin-bottom: 8px;
+        margin-bottom: 4px;
         padding: 6px 0;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-        animation: fadeIn 0.15s ease;
+        border-bottom: 1px solid var(--border);
+        animation: fadeIn var(--quick) var(--ease);
       }
 
       @keyframes fadeIn {
@@ -1763,49 +2053,556 @@ import { exportAsMarkdown } from '../utils/transcript-store';
         to { opacity: 1; transform: translateY(0); }
       }
 
+      @media (prefers-reduced-motion: reduce) {
+        .entry {
+          animation: none;
+        }
+      }
+
       .entry:last-child {
         border-bottom: none;
       }
 
       .speaker {
-        font-weight: 600;
-        color: #8ab4f8;
-        font-size: 12px;
         margin-right: 6px;
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--text-dim);
       }
 
       .time {
-        color: #9aa0a6;
-        font-size: 11px;
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+        color: var(--text-faint);
       }
 
       .device-id {
         display: block;
-        color: #6b7280;
-        font-size: 9px;
-        font-family: monospace;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
         max-width: 100%;
-        opacity: 0.7;
+        overflow: hidden;
+        font-family: var(--font-code);
+        font-size: 9px;
+        color: var(--text-faint);
+        white-space: nowrap;
+        text-overflow: ellipsis;
       }
 
       .text {
         margin-top: 2px;
-        line-height: 1.4;
-        color: #dadce0;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--text);
         word-break: break-word;
       }
 
       .footer {
         display: flex;
+        align-items: center;
         justify-content: space-between;
-        padding: 6px 12px;
+        gap: 8px;
+        min-height: 28px;
+        padding: 3px 10px;
         font-size: 11px;
-        color: #9aa0a6;
-        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        color: var(--text-dim);
+        background: var(--bg-sunken);
+        border-top: 1px solid var(--border);
         flex-shrink: 0;
+      }
+
+      #footer-left {
+        flex: none;
+        white-space: nowrap;
+      }
+
+      #footer-right {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 4px;
+        min-width: 0;
+      }
+
+      /* Where a meeting went, or why it did not: under its name on a card, at
+         the end of the footer on the live one. The folder is the one thing on
+         the line that is pressed, so it is the one thing drawn as a control. */
+      .where {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 22px;
+        min-width: 0;
+        margin-top: 4px;
+        font-size: 11px;
+        color: var(--text-dim);
+      }
+
+      .footer .where {
+        margin-top: 0;
+      }
+
+      .where svg {
+        flex: none;
+        width: 12px;
+        height: 12px;
+        color: var(--text-faint);
+      }
+
+      .where .what {
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      .where.with-dest .what {
+        flex: none;
+      }
+
+      .where.warning {
+        color: var(--warning-text);
+      }
+
+      .where.danger {
+        color: var(--danger);
+      }
+
+      .where .dest {
+        display: inline-flex;
+        flex: 0 1 auto;
+        align-items: center;
+        gap: 4px;
+        min-width: 48px;
+        padding: 1px 6px;
+        overflow: hidden;
+        font-family: var(--font-code);
+        font-size: 11px;
+        color: var(--text);
+        white-space: nowrap;
+        background: var(--bg-sunken);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        transition: background-color var(--quick) var(--ease), border-color var(--quick) var(--ease);
+      }
+
+      /* The repository gives way first: it is recognisable from its first letters,
+         and the folder is what tells two meetings apart. */
+      .where .dest .repo {
+        flex: 1 1 0;
+        min-width: 2ch;
+        max-width: max-content;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        color: var(--text-dim);
+      }
+
+      .where .dest .sep {
+        flex: none;
+        color: var(--text-faint);
+      }
+
+      .where .dest .folder {
+        flex: 0 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .footer .where .dest {
+        background: var(--bg-raised);
+      }
+
+      .where .dest:hover {
+        background: var(--bg-hover);
+        border-color: var(--border-strong);
+      }
+
+      /* Nowhere chosen yet: a chip with nothing in it, drawn as the gap it is. */
+      .where .dest.empty {
+        font-family: var(--font-ui);
+        color: var(--text-dim);
+        border-style: dashed;
+      }
+
+      .where .acts {
+        display: flex;
+        flex-shrink: 0;
+        gap: 2px;
+        margin-left: auto;
+      }
+
+      .where .acts button {
+        padding: 2px 6px;
+        font-size: 11px;
+        color: var(--accent);
+        border-radius: 5px;
+        transition: background-color var(--quick) var(--ease);
+      }
+
+      .where .acts button:hover {
+        background: var(--bg-hover);
+      }
+
+      /* A screen says one thing and offers one way out. */
+      .screen {
+        padding: 20px 16px;
+      }
+
+      .screen.centre {
+        text-align: center;
+      }
+
+      .screen h3 {
+        margin-bottom: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      .screen p {
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--text-dim);
+      }
+
+      .screen .actions,
+      .offer .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 6px;
+        margin-top: 14px;
+      }
+
+      .screen .code {
+        display: block;
+        margin: 8px 0 12px;
+        font-family: var(--font-code);
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: 0.18em;
+        color: var(--text);
+      }
+
+      .steps {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 10px;
+        padding-left: 0;
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--text-dim);
+        list-style: none;
+        counter-reset: step;
+      }
+
+      .steps li {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+      }
+
+      .steps li::before {
+        content: counter(step);
+        counter-increment: step;
+        display: inline-grid;
+        flex: none;
+        place-items: center;
+        width: 16px;
+        height: 16px;
+        font-size: 10px;
+        color: var(--text-dim);
+        border: 1px solid var(--border-strong);
+        border-radius: 50%;
+      }
+
+      .primary {
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--accent-text);
+        background: var(--accent);
+        border-radius: var(--radius);
+        transition: opacity var(--quick) var(--ease);
+      }
+
+      .primary:hover {
+        opacity: 0.92;
+      }
+
+      .ghost {
+        padding: 4px 10px;
+        font-size: 11px;
+        color: var(--text-dim);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        transition: background-color var(--quick) var(--ease), color var(--quick) var(--ease);
+      }
+
+      .ghost:hover {
+        color: var(--text);
+        background: var(--bg-hover);
+      }
+
+      /* The two cards that show once: the rename, and the backlog after the first pairing. */
+      .offer {
+        margin: 8px 10px 0;
+        padding: 8px 10px;
+        background: var(--bg-sunken);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+
+      .offer .head {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+      }
+
+      .offer .what {
+        flex: 1;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      .offer .dismiss {
+        display: grid;
+        flex: none;
+        place-items: center;
+        width: 20px;
+        height: 20px;
+        margin: -2px -4px 0 0;
+        font-size: 14px;
+        color: var(--text-faint);
+        border-radius: 4px;
+      }
+
+      .offer .dismiss:hover {
+        color: var(--text);
+        background: var(--bg-hover);
+      }
+
+      .offer p {
+        margin-top: 4px;
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--text-dim);
+      }
+
+      .offer .actions {
+        margin-top: 8px;
+      }
+
+      /* The surface a picker is drawn on. */
+      .menu {
+        position: absolute;
+        z-index: 1001;
+        min-width: 170px;
+        max-height: 220px;
+        padding: 4px;
+        overflow-y: auto;
+        background: var(--bg-raised);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+      }
+
+      .menu .item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        padding: 5px 8px;
+        font-family: var(--font-code);
+        font-size: 11px;
+        color: var(--text);
+        text-align: start;
+        border-radius: 4px;
+      }
+
+      .menu .item svg {
+        flex: none;
+        width: 12px;
+        height: 12px;
+        color: var(--text-faint);
+      }
+
+      .menu .item:hover {
+        background: var(--bg-hover);
+      }
+
+      .menu .item.on {
+        color: var(--accent);
+        background: var(--bg-active);
+      }
+
+      .menu .item.plain {
+        font-family: var(--font-ui);
+        color: var(--text-dim);
+      }
+
+      .menu .rule {
+        height: 1px;
+        margin: 4px 0;
+        background: var(--border);
+      }
+
+      /* The destination picker: the repository across the top, its folders as a
+         tree under it, and a field that filters them or names a new one. */
+      .menu.picker {
+        display: flex;
+        flex-direction: column;
+        left: 8px;
+        right: 8px;
+        min-width: 0;
+        padding: 0;
+        overflow: hidden;
+      }
+
+      .picker .head {
+        display: flex;
+        flex: none;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        padding: 7px 10px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text);
+        text-align: start;
+        border-bottom: 1px solid var(--border);
+        transition: background-color var(--quick) var(--ease);
+      }
+
+      .picker .head:hover {
+        background: var(--bg-hover);
+      }
+
+      .picker .head svg {
+        flex: none;
+        width: 12px;
+        height: 12px;
+        color: var(--text-faint);
+      }
+
+      .picker .head svg:last-child {
+        transform: rotate(90deg);
+        transition: transform var(--quick) var(--ease);
+      }
+
+      .picker .head.open svg:last-child {
+        transform: rotate(-90deg);
+      }
+
+      .picker .name {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      .picker .filter {
+        flex: none;
+        margin: 6px 6px 2px;
+        padding: 4px 8px;
+        font: inherit;
+        font-size: 11px;
+        color: var(--text);
+        background: var(--bg-sunken);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        outline: none;
+        transition: border-color var(--quick) var(--ease);
+      }
+
+      .picker .filter:focus {
+        border-color: var(--border-strong);
+      }
+
+      .picker .filter::placeholder {
+        color: var(--text-faint);
+      }
+
+      .picker .body {
+        flex: 1 1 auto;
+        min-height: 0;
+        padding: 4px;
+        overflow-y: auto;
+      }
+
+      .picker .row {
+        padding-left: calc(6px + var(--depth, 0) * 14px);
+      }
+
+      .picker .row.cursor {
+        background: var(--bg-hover);
+      }
+
+      .picker .row.on.cursor {
+        background: var(--bg-active);
+      }
+
+      .picker .chev {
+        display: flex;
+        flex: none;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        margin: -3px -4px -3px -5px;
+        color: var(--text-faint);
+        border-radius: 3px;
+      }
+
+      .picker .chev svg {
+        width: 10px;
+        height: 10px;
+        transition: transform var(--quick) var(--ease);
+      }
+
+      .picker .chev.open svg {
+        transform: rotate(90deg);
+      }
+
+      .picker .chev.none {
+        visibility: hidden;
+      }
+
+      .picker .chev:hover {
+        color: var(--text);
+        background: var(--bg-active);
+      }
+
+      .picker .tag {
+        flex: none;
+        padding: 0 4px;
+        font-family: var(--font-ui);
+        font-size: 9px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+      }
+
+      .picker .create .name {
+        font-family: var(--font-ui);
+        color: var(--text-dim);
+      }
+
+      .picker .create b {
+        font-family: var(--font-code);
+        font-weight: 400;
+        color: var(--text);
+      }
+
+      .picker .foot {
+        flex: none;
+        padding: 6px 10px;
+        white-space: normal;
+        border-top: 1px solid var(--border);
+        border-radius: 0;
       }
 
       /* Resize edges & corners */
@@ -1821,20 +2618,19 @@ import { exportAsMarkdown } from '../utils/transcript-store';
 
       /* Meetings list */
       .meeting-item {
-        padding: 10px;
+        margin-bottom: 2px;
+        padding: 8px 10px;
         border-radius: 8px;
         cursor: pointer;
-        transition: background 0.15s;
-        margin-bottom: 4px;
+        transition: background-color var(--quick) var(--ease);
       }
 
       .meeting-item:hover {
-        background: rgba(255, 255, 255, 0.06);
+        background: var(--bg-hover);
       }
 
       .meeting-item.current {
-        background: rgba(138, 180, 248, 0.08);
-        border: 1px solid rgba(138, 180, 248, 0.2);
+        background: var(--bg-active);
       }
 
       .meeting-item-header {
@@ -1844,57 +2640,59 @@ import { exportAsMarkdown } from '../utils/transcript-store';
       }
 
       .meeting-item-title {
-        font-weight: 500;
-        color: #e8eaed;
         flex: 1;
-        outline: none;
-        border-radius: 3px;
+        min-width: 0;
         padding: 1px 3px;
         margin: -1px -3px;
+        overflow: hidden;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text);
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        border-radius: 3px;
+        outline: none;
       }
 
       .meeting-item-title[contenteditable="true"] {
-        background: rgba(255, 255, 255, 0.08);
-        outline: 1px solid #8ab4f8;
+        white-space: normal;
+        background: var(--bg-sunken);
+        outline: 1px solid var(--accent);
       }
 
+      /* Live is a dot, not a badge: the card already says so in its shade. */
       .live-badge {
-        background: #c5221f;
-        color: white;
-        font-size: 9px;
-        font-weight: 700;
-        padding: 2px 6px;
-        border-radius: 3px;
-        letter-spacing: 0.5px;
         flex-shrink: 0;
+        width: 6px;
+        height: 6px;
+        overflow: hidden;
+        font-size: 0;
+        color: transparent;
+        background: var(--accent);
+        border-radius: 50%;
       }
 
       .meeting-item-meta {
+        margin-top: 2px;
         font-size: 11px;
-        color: #9aa0a6;
-        margin-top: 4px;
+        color: var(--text-faint);
       }
 
       .back-nav {
-        padding: 4px 12px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        padding: 4px 10px;
+        border-bottom: 1px solid var(--border);
         flex-shrink: 0;
       }
 
       .btn-back-live {
-        background: none;
-        border: none;
-        color: #9aa0a6;
-        font-size: 11px;
-        cursor: pointer;
         padding: 2px 0;
-        opacity: 0.7;
-        transition: opacity 0.15s, color 0.15s;
+        font-size: 11px;
+        color: var(--text-dim);
+        transition: color var(--quick) var(--ease);
       }
 
       .btn-back-live:hover {
-        opacity: 1;
-        color: #8ab4f8;
+        color: var(--accent);
       }
 
       .meeting-item-participants {
@@ -1905,94 +2703,86 @@ import { exportAsMarkdown } from '../utils/transcript-store';
       }
 
       .participant-tag {
-        background: rgba(138, 180, 248, 0.12);
-        color: #8ab4f8;
-        font-size: 10px;
         padding: 1px 6px;
-        border-radius: 8px;
+        font-size: 10px;
+        color: var(--text-dim);
         white-space: nowrap;
+        background: var(--bg-sunken);
+        border: 1px solid var(--border);
+        border-radius: 8px;
       }
 
       .meeting-item-actions {
         display: flex;
-        gap: 4px;
+        flex-shrink: 0;
+        gap: 2px;
         margin-left: auto;
         opacity: 0;
-        transition: opacity 0.15s;
-        flex-shrink: 0;
+        transition: opacity var(--quick) var(--ease);
       }
 
-      .meeting-item:hover .meeting-item-actions {
+      .meeting-item:hover .meeting-item-actions,
+      .meeting-item:focus-within .meeting-item-actions {
         opacity: 1;
       }
 
       .meeting-action {
-        background: rgba(255, 255, 255, 0.06);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 4px;
-        color: #9aa0a6;
-        cursor: pointer;
-        font-size: 12px;
-        width: 24px;
-        height: 22px;
         display: flex;
         align-items: center;
         justify-content: center;
-        transition: background 0.15s, color 0.15s;
+        width: 22px;
+        height: 22px;
         padding: 0;
+        font-size: 12px;
+        color: var(--text-dim);
+        border-radius: 5px;
+        transition: background-color var(--quick) var(--ease), color var(--quick) var(--ease);
       }
 
       .meeting-action:hover {
-        background: rgba(255, 255, 255, 0.12);
-        color: #e8eaed;
+        color: var(--text);
+        background: var(--bg-hover);
       }
 
       .meeting-action[data-action="delete"]:hover {
-        background: rgba(234, 67, 53, 0.15);
-        color: #f28b82;
+        color: var(--danger);
       }
 
       .delete-confirm {
-        font-size: 12px;
-        color: #f28b82;
         display: flex;
         align-items: center;
         gap: 6px;
+        font-size: 11px;
+        color: var(--danger);
       }
 
       .confirm-yes,
       .confirm-no {
-        background: none;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 4px;
-        color: #9aa0a6;
-        cursor: pointer;
-        font-size: 11px;
         padding: 2px 8px;
-        transition: background 0.15s, color 0.15s;
+        font-size: 11px;
+        color: var(--text-dim);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        transition: background-color var(--quick) var(--ease), color var(--quick) var(--ease);
       }
 
       .confirm-yes:hover {
-        background: rgba(234, 67, 53, 0.2);
-        color: #f28b82;
-        border-color: rgba(234, 67, 53, 0.3);
+        color: var(--danger);
+        background: var(--bg-hover);
       }
 
       .confirm-no:hover {
-        background: rgba(255, 255, 255, 0.1);
-        color: #e8eaed;
+        color: var(--text);
+        background: var(--bg-hover);
       }
 
       /* Detail view */
       .btn-back {
-        background: none;
-        border: none;
-        color: #8ab4f8;
-        font-size: 12px;
-        cursor: pointer;
-        padding: 6px 0;
-        margin-bottom: 8px;
         display: block;
+        margin-bottom: 8px;
+        padding: 6px 0;
+        font-size: 12px;
+        color: var(--accent);
       }
 
       .btn-back:hover {
@@ -2002,28 +2792,26 @@ import { exportAsMarkdown } from '../utils/transcript-store';
       .detail-notes {
         margin-bottom: 12px;
         padding-bottom: 8px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        border-bottom: 1px solid var(--border);
       }
 
       .detail-notes-title {
+        margin-bottom: 6px;
         font-size: 11px;
         font-weight: 600;
-        color: #fbbc04;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        margin-bottom: 6px;
+        color: var(--text-dim);
       }
 
-      .detail-entries {
-        /* entries already styled */
+      .detail-notes .note-item {
+        margin-bottom: 4px;
       }
 
       .empty-state,
       .loading {
-        text-align: center;
-        color: #9aa0a6;
         padding: 40px 0;
-        font-size: 13px;
+        font-size: 12px;
+        text-align: center;
+        color: var(--text-faint);
       }
     `;
   }
