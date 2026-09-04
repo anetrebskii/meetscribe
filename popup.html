@@ -304,9 +304,14 @@
     }
 
     .participant-tag {
+      /* A name Meet got wrong can be a whole sentence, and one that cannot
+         shrink widens the card and puts a scrollbar under the whole list. */
+      max-width: 100%;
+      overflow: hidden;
       padding: 1px 6px;
       font-size: 10px;
       color: var(--text-dim);
+      text-overflow: ellipsis;
       white-space: nowrap;
       background: var(--bg-sunken);
       border: 1px solid var(--border);
