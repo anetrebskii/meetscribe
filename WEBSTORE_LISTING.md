@@ -16,6 +16,8 @@ When you join a Google Meet call, the extension starts transcribing immediately.
 
 SAVE TO NOTULA
 
+The folder your calls land in is your AI brain. It is a git repository - on GitHub, on GitLab, or wherever else you keep one - and everything that knows something about your work writes into it: this extension, the other tools you run, and you. Notula is how you get access to it, and your assistants read it from there, through Notula and not only through Notula.
+
 Save each meeting to Notula, and choose where to save it. Notula is a free Markdown editor for macOS and Windows that keeps documents in a folder on your disk, so a finished call becomes a Markdown file in a repository you already have.
 
 - Set one folder for everything, or skip the default and pick the repository and the folder for each meeting
@@ -23,6 +25,8 @@ Save each meeting to Notula, and choose where to save it. Notula is a free Markd
 - The panel says where the meeting will be saved, before it is saved and after
 - Save now writes what has been said so far, without waiting for the call to end
 - Notula asks before it lets the extension in, and the extension writes Markdown files and nothing else
+
+Build AI brain with Notula: https://notula.org/ai-brain
 
 KEY FEATURES
 
