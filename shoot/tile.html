@@ -19,8 +19,10 @@
   .mark img { display: block; border-radius: 22%; }
   .mark span { font-weight: 600; color: #6f665f; letter-spacing: -.1px; }
   h1 { font-weight: 600; letter-spacing: -.5px; line-height: 1.16; }
-  h1 em { font-style: normal; color: #b0563a; }
   p { color: #6f665f; }
+  /* The hint, and it stays a hint: transcription is what somebody installs
+     this for, and the brain is what they find out afterwards. */
+  .hint { color: #b0563a; font-weight: 500; }
   .stage { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
   iframe { border: 0; border-radius: 12px; background: #fff;
            box-shadow: 0 18px 44px rgba(40, 30, 22, .20), 0 2px 6px rgba(40, 30, 22, .10); }
@@ -31,33 +33,42 @@
   body.small .say { width: 186px; }
   body.small .mark img { width: 26px; height: 26px; }
   body.small .mark span { font-size: 11.5px; }
-  body.small h1 { margin-top: 12px; font-size: 22px; }
+  body.small h1 { margin-top: 12px; font-size: 21px; }
   body.small p { margin-top: 9px; font-size: 11.5px; line-height: 1.48; }
+  body.small .hint { margin-top: 12px; font-size: 11px; }
 
   /* 1400x560. Room to read the product, so the product is what is shown. */
   body.marquee { width: 1400px; height: 560px; padding: 48px 76px; gap: 40px; }
   body.marquee .say { width: 600px; }
   body.marquee .mark img { width: 46px; height: 46px; }
   body.marquee .mark span { font-size: 19px; }
-  body.marquee h1 { margin-top: 26px; font-size: 52px; }
-  body.marquee p { margin-top: 18px; font-size: 19px; line-height: 1.5; max-width: 30ch; }
+  body.marquee h1 { margin-top: 26px; font-size: 50px; }
+  body.marquee p { margin-top: 18px; font-size: 19px; line-height: 1.5; max-width: 32ch; }
+  body.marquee .hint { margin-top: 26px; font-size: 17px; }
 
-  .rings { width: 100%; max-width: 210px; display: block; }
-  .rings circle.r { fill: none; stroke: #c9bfb2; stroke-width: 3.4; }
-  .rings circle.core { fill: #2c2723; }
-  .rings .glyph { fill: none; stroke: #f7f4ef; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
+  /* A transcript, because transcription is what this is installed for. Drawn
+     rather than screenshotted: at 440x280 the real popup is a smudge, and this
+     is the same three speakers reading at a size that survives the scale. */
+  .tx { width: 178px; background: #fff; border-radius: 9px; padding: 11px 12px;
+        box-shadow: 0 10px 26px rgba(40, 30, 22, .16), 0 1px 3px rgba(40, 30, 22, .10); }
+  .tx .ln + .ln { margin-top: 9px; }
+  .tx .who { font-size: 8.5px; font-weight: 600; color: #2c2723; }
+  .tx .at { font-size: 7.5px; color: #a49a90; margin-left: 5px; }
+  .tx .said { margin-top: 2px; font-size: 8px; line-height: 1.42; color: #6f665f; }
 </style>
 <div class="say">
   <div class="mark"><img src="../icons/icon128.png" alt=""><span>Notula for Google Meet</span></div>
   <h1></h1>
   <p></p>
+  <div class="hint"></div>
 </div>
 <div class="stage"></div>
 <script>
   const shot = JSON.parse(decodeURIComponent(location.hash.slice(1)));
   document.body.className = shot.kind;
-  document.querySelector('h1').innerHTML = shot.title;
+  document.querySelector('h1').textContent = shot.title;
   document.querySelector('p').textContent = shot.sub;
+  document.querySelector('.hint').textContent = shot.hint;
 
   const stage = document.querySelector('.stage');
   if (shot.src) {
@@ -67,16 +78,10 @@
     frame.src = shot.src;
     stage.appendChild(frame);
   } else {
-    // The same five rings as notula.org/ai-brain, without the labels: at tile
-    // size the words would not be readable and the shape still carries it.
-    const lobe = '<path d="M24 7c-4-2.6-9 .2-9 4.6-3.6.4-5.6 3.6-4.4 6.6-3 2-2.8 6.6.6 8.2-.6 3.6 2.6 6.6 6.2 5.8 1.4 3.2 5.4 4.2 8 2.2"/><path d="M24 7v27.4"/><path d="M19 12c2.6.6 3.6 3 2.6 5"/><path d="M15.4 20.6c2.4-.4 4.6 1 5 3.2"/><path d="M17.6 28.4c1.8-1.4 4.2-1 5.4.8"/>';
-    stage.innerHTML = `<svg class="rings" viewBox="0 0 560 560">
-      ${[250, 200, 146, 86].map((r) => `<circle class="r" cx="280" cy="280" r="${r}"/>`).join('')}
-      <circle class="core" cx="280" cy="280" r="68"/>
-      <g class="glyph" transform="translate(232 220) scale(2)">
-        <g id="lobe">${lobe}</g>
-        <use href="#lobe" transform="scale(-1,1) translate(-48,0)"/>
-      </g>
-    </svg>`;
+    stage.innerHTML = `<div class="tx">${shot.lines.map((l) => `
+      <div class="ln">
+        <span class="who">${l[0]}</span><span class="at">${l[1]}</span>
+        <div class="said">${l[2]}</div>
+      </div>`).join('')}</div>`;
   }
 </script>

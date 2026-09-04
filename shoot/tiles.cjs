@@ -75,14 +75,21 @@ async function shoot(browser, name, shot, size) {
 
   await shoot(browser, 'tile-small', {
     kind: 'small',
-    title: 'Build <em>AI brain</em> with Notula',
-    sub: 'Every Google Meet call, transcribed with speaker names and saved as Markdown into your repository.',
+    title: 'Live transcription with speaker names',
+    sub: 'A finished call saves itself as Markdown into a folder on your disk.',
+    hint: 'Build AI brain with Notula',
+    lines: [
+      ['Sarah Chen', '10:04', "Let's plan the Q2 roadmap. The focus is the new onboarding flow."],
+      ['Marcus Reid', '10:05', 'Setup moves to after the first real result, not signup.'],
+      ['Priya Sharma', '10:07', 'That matches the research. People dropped off at the form.'],
+    ],
   }, { width: 440, height: 280 });
 
   await shoot(browser, 'tile-marquee', {
     kind: 'marquee',
-    title: 'Build <em>AI brain</em> with Notula',
-    sub: 'Every Google Meet call, transcribed with speaker names and saved as Markdown into the repository your assistants already read.',
+    title: 'Live transcription with speaker names',
+    sub: 'A finished call saves itself as Markdown into a folder on your disk.',
+    hint: 'Build AI brain with Notula',
     src: '../popup.html', w: 400, h: 448,
   }, { width: 1400, height: 560 });
 
