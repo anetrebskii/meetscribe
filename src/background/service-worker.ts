@@ -151,6 +151,7 @@ async function restoreSessionState(): Promise<void> {
     }
 
     // Restore per-session state
+    const restored: string[] = [];
     const sessionStorage = await chrome.storage.session.get(['sessions']);
     if (sessionStorage.sessions && typeof sessionStorage.sessions === 'object') {
       const stored = sessionStorage.sessions as Record<string, { meetingId: string | null; meetingCode: string | null }>;
@@ -165,9 +166,23 @@ async function restoreSessionState(): Promise<void> {
             // Seed transcript store from meeting entries for dedup
             seedSession(sid, meeting.entries);
             updateExtensionIcon(true);
+            restored.push(sid);
           }
         }
       }
+    }
+
+    // What was restored says a meeting was live when this worker last slept,
+    // never that its tab is still there. A tab that is hands its keepalive
+    // port back within a second or two, and the port clears this alarm; a tab
+    // that closed while the worker slept, and a content script an extension
+    // reload orphaned, never do, and used to leave the meeting live for good.
+    // One that already reconnected is skipped, so the grace cannot end a call
+    // that is still going.
+    const back = new Set(tabSessionMap.values());
+    for (const sid of restored) {
+      if (back.has(sid)) continue;
+      void chrome.alarms.create(END_ALARM + sid, { when: Date.now() + KEEPALIVE_GRACE_MS });
     }
   } catch { /* empty on first load */ }
 }
