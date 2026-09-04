@@ -13,6 +13,7 @@ import {
   renderOffers,
   renderScreen as renderNotulaScreen,
   saveLine,
+  defaultLine,
   stageAfter,
   liveLine,
 } from '../utils/notula-ui';
@@ -90,6 +91,8 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
   let awaitingTimer: ReturnType<typeof setInterval> | null = null;
   let captionsMissing = false;
   let screenShown = false;
+  /** What the footer's where-line was last drawn from; cleared whenever the
+      footer is, so leaving the live view and coming back redraws it. */
   let footerWhereKey = '';
 
   // --- Shadow DOM setup ---
@@ -125,6 +128,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
     </div>
     <button class="connect" id="connect-offer" hidden>${LINK_ICON}<span>Save to your Git repo via Notula</span></button>
     <div class="connect warning" id="connect-wait" hidden>Waiting for Notula</div>
+    <div class="default-line" id="default-line" hidden></div>
     <div class="body" id="body">
       <div class="toolbar" id="toolbar">
         <select class="lang-select" id="lang-select"></select>
@@ -213,6 +217,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
   const connectWait = shadow.getElementById('connect-wait')!;
   const offersEl = shadow.getElementById('offers')!;
   const screenEl = shadow.getElementById('screen')!;
+  const defaultEl = shadow.getElementById('default-line')!;
   const placeholderEl = shadow.getElementById('transcript-placeholder')!;
 
   const notulaCtx: NotulaContext = {
@@ -635,6 +640,19 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
 
   // --- View switching ---
 
+  /**
+   * The bar under the header: where a call with no memory of its own goes.
+   * Only on the list, where the lines on the cards are about particular calls
+   * and this one is about the setting behind them; the live view says the same
+   * thing about the call it is showing, in its footer.
+   */
+  function renderDefaultLine(): void {
+    const line = currentView === 'meetings' && !screenShown ? defaultLine(notulaCtx) : null;
+    defaultEl.innerHTML = '';
+    if (line) defaultEl.appendChild(line);
+    defaultEl.hidden = line === null;
+  }
+
   function applyViewDisplays(): void {
     const view = currentView;
     liveSections.style.display = view === 'live' ? '' : 'none';
@@ -645,6 +663,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
     backNav.style.display = (view === 'live' || view === 'meeting-detail') ? '' : 'none';
     footerEl.style.display = '';
     offersEl.style.display = view === 'meeting-detail' ? 'none' : '';
+    renderDefaultLine();
   }
 
   function switchView(view: typeof currentView): void {
@@ -662,6 +681,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
         popupTitle.textContent = 'Meetings';
         footerLeft.innerHTML = brainLink();
         footerRight.textContent = '';
+        footerWhereKey = '';
         loadMeetingsList();
         break;
       case 'meeting-detail':
@@ -958,12 +978,11 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
     const titleEl = item.querySelector('.meeting-item-title') as HTMLElement;
     const actionsEl = item.querySelector('.meeting-item-actions') as HTMLElement;
 
-    // Under the name: where the call went, or why it did not. Never on the
-    // live one, whose line is the footer.
-    if (!isCurrent) {
-      const line = saveLine(notulaCtx, m);
-      if (line) item.appendChild(line);
-    }
+    // Under the name: where the call went, or where it will go while it is
+    // still on. The live one says it here too, because this view has no footer
+    // of its own to say it in.
+    const line = isCurrent ? liveLine(notulaCtx, m) : saveLine(notulaCtx, m);
+    if (line) item.appendChild(line);
 
     // --- Action button handlers ---
 
@@ -1142,6 +1161,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
         detailEl.innerHTML = '<div class="empty-state">No transcription entries</div>';
         footerLeft.textContent = '0 lines';
         footerRight.textContent = '';
+        footerWhereKey = '';
         return;
       }
 
@@ -1174,6 +1194,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
 
       updateFooter();
       footerRight.textContent = '';
+      footerWhereKey = '';
     } catch {
       detailEl.innerHTML = '<div class="empty-state">Failed to load meeting</div>';
     }
@@ -1226,7 +1247,9 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
       screenShown = false;
       if (pairStage === 'idle' && notulaSnapshot?.status.state !== 'noWorkspace') stopAwaiting();
       applyViewDisplays();
+      return;
     }
+    renderDefaultLine();
   }
 
   function renderNotula(): void {
@@ -1771,6 +1794,22 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
         height: 12px;
       }
 
+      /* The one setting, as a bar rather than a menu: where new meetings go. */
+      .default-line {
+        padding: 3px 10px;
+        background: var(--bg-sunken);
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+
+      .default-line .where {
+        margin-top: 0;
+      }
+
+      .default-line .where .dest {
+        background: var(--bg-raised);
+      }
+
       .body {
         display: flex;
         flex-direction: column;
@@ -2147,9 +2186,10 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
         min-width: 0;
       }
 
-      /* Where a meeting went, or why it did not: under its name on a card, at
-         the end of the footer on the live one. The folder is the one thing on
-         the line that is pressed, so it is the one thing drawn as a control. */
+      /* Where a meeting went, or why it did not: under its name on a card, and
+         for the call still going also at the end of the footer. The folder is
+         the one thing on the line that is pressed, so it is the one thing
+         drawn as a control. */
       .where {
         display: flex;
         align-items: center;
