@@ -2288,6 +2288,16 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
         color: var(--text-dim);
       }
 
+      .screen .why {
+        color: var(--accent);
+        text-decoration: none;
+        border-bottom: 1px solid transparent;
+      }
+
+      .screen .why:hover {
+        border-bottom-color: currentColor;
+      }
+
       .screen .actions,
       .offer .actions {
         display: flex;

@@ -527,6 +527,7 @@ export function renderScreen(
   if (stage === 'explaining') {
     html = `<h3>Save meetings to your Git repo</h3>
       <p>Notula is a desktop app. It writes each finished call into a Markdown file in your repository - on your disk, no account, no server. This extension keeps working without it.</p>
+      <p><a class="why" href="${NOTULA_SITE}/ai-brain" target="_blank" rel="noopener">Why the repository is the brain</a></p>
       <div class="actions"><button type="button" class="ghost" data-act="later">Not now</button><button type="button" class="primary" data-act="get">Get Notula</button></div>`;
   } else if (stage === 'awaiting') {
     html = `<h3>Waiting for Notula</h3>
