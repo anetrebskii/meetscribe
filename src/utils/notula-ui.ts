@@ -505,13 +505,14 @@ function show(ctx: NotulaContext, anchor: HTMLElement, box: HTMLElement): void {
 }
 
 /**
- * What the repository is for, in one line. It belongs on the offer screen and
+ * What the repository is for, in one line, as an invitation rather than an
+ * explanation - Alex's wording. It belongs on the offer screen and
  * in the footer of the list, because the offer screen is only ever seen by
  * somebody who has not paired yet - once Notula is connected that screen is
  * gone and the question it answers is not.
  */
 export function brainLink(): string {
-  return `<a class="why" href="${NOTULA_SITE}/ai-brain" target="_blank" rel="noopener">Why the repository is the brain</a>`;
+  return `<a class="why" href="${NOTULA_SITE}/ai-brain" target="_blank" rel="noopener">Build your AI brain with Notula</a>`;
 }
 
 /** The line under the header: an offer, a wait, or nothing while everything is fine. */
