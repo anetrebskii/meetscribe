@@ -3,6 +3,7 @@ import type { PairStage, Snapshot as NotulaSnapshot } from '../background/notula
 import {
   AWAITING_POLL_MS,
   NOTULA_SITE,
+  brainLink,
   defaultLine,
   renderConnect,
   renderOffers,
@@ -99,7 +100,8 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
       contentEl.style.display = '';
       offersEl.style.display = listing ? '' : 'none';
       defaultEl.style.display = listing ? '' : 'none';
-      footerEl.style.display = listing ? 'none' : 'flex';
+      footerEl.style.display = 'flex';
+      if (listing) footerLeft.innerHTML = brainLink();
     }
     if (listing && !show) void loadMeetings();
   }
@@ -157,7 +159,8 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
     headerTitle.textContent = 'Notula for Google Meet';
     btnBack.style.display = 'none';
     headerActions.style.display = 'none';
-    footerEl.style.display = 'none';
+    footerEl.style.display = 'flex';
+    footerLeft.innerHTML = brainLink();
     offersEl.style.display = '';
     defaultEl.style.display = '';
     viewingMeetingId = null;
@@ -529,5 +532,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
 
   // --- Init ---
 
-  loadMeetings();
+  // Through showList rather than straight to loadMeetings: the list state is
+  // set in one place, and the footer is part of it.
+  showList();
 })();

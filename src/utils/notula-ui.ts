@@ -504,6 +504,16 @@ function show(ctx: NotulaContext, anchor: HTMLElement, box: HTMLElement): void {
   document.addEventListener('keydown', onKey, true);
 }
 
+/**
+ * What the repository is for, in one line. It belongs on the offer screen and
+ * in the footer of the list, because the offer screen is only ever seen by
+ * somebody who has not paired yet - once Notula is connected that screen is
+ * gone and the question it answers is not.
+ */
+export function brainLink(): string {
+  return `<a class="why" href="${NOTULA_SITE}/ai-brain" target="_blank" rel="noopener">Why the repository is the brain</a>`;
+}
+
 /** The line under the header: an offer, a wait, or nothing while everything is fine. */
 export function renderConnect(ctx: NotulaContext, offer: HTMLElement, wait: HTMLElement, stage: UiStage): void {
   const state = ctx.snapshot()?.status.state ?? 'notPaired';
@@ -527,7 +537,7 @@ export function renderScreen(
   if (stage === 'explaining') {
     html = `<h3>Save meetings to your Git repo</h3>
       <p>Notula is a desktop app. It writes each finished call into a Markdown file in your repository - on your disk, no account, no server. This extension keeps working without it.</p>
-      <p><a class="why" href="${NOTULA_SITE}/ai-brain" target="_blank" rel="noopener">Why the repository is the brain</a></p>
+      <p>${brainLink()}</p>
       <div class="actions"><button type="button" class="ghost" data-act="later">Not now</button><button type="button" class="primary" data-act="get">Get Notula</button></div>`;
   } else if (stage === 'awaiting') {
     html = `<h3>Waiting for Notula</h3>

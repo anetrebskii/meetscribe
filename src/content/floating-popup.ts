@@ -6,6 +6,7 @@ import {
   AWAITING_POLL_MS,
   LINK_ICON,
   NOTULA_SITE,
+  brainLink,
   connected,
   destinationFor,
   renderConnect,
@@ -659,7 +660,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
         break;
       case 'meetings':
         popupTitle.textContent = 'Meetings';
-        footerLeft.textContent = '';
+        footerLeft.innerHTML = brainLink();
         footerRight.textContent = '';
         loadMeetingsList();
         break;
@@ -2288,14 +2289,26 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
         color: var(--text-dim);
       }
 
-      .screen .why {
+      /* Not scoped to the screen: the same line sits in the footer of the list,
+         which is the only place somebody already paired can find it. */
+      .why {
         color: var(--accent);
         text-decoration: none;
         border-bottom: 1px solid transparent;
       }
 
-      .screen .why:hover {
+      .why:hover {
         border-bottom-color: currentColor;
+      }
+
+      /* In the footer it is the quietest thing on the surface, because the accent
+         on this list already belongs to Save to Notula and Open. */
+      .footer .why {
+        color: var(--text-dim);
+      }
+
+      .footer .why:hover {
+        color: var(--accent);
       }
 
       .screen .actions,
