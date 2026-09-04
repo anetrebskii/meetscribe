@@ -62,6 +62,15 @@ HOW IT WORKS
 3. Captions are enabled automatically, and the extension captures and organizes the text in real time
 4. Review, export, or save the transcript to Notula at any time
 
+## URLs
+
+These three fields are on the Store listing tab, under "Additional fields". They
+used to point at anetrebskii.github.io/meetscribe, which is now a redirect.
+
+- Homepage URL: https://notula.org/meet
+- Support URL: https://notula.org/#feedback
+- Privacy policy URL: https://notula.org/meet/privacy
+
 ## Category
 Productivity > Communication
 
