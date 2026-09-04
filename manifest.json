@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Notula for Google Meet",
-  "version": "2.0.0",
-  "description": "Live Google Meet transcription with meeting history. A finished call can save itself as Markdown into a folder on your disk through Notula.",
+  "version": "2.25.0",
+  "description": "Live Google Meet transcription with speaker names. A finished call saves itself as Markdown into a folder on your disk.",
   "permissions": [
     "storage",
     "activeTab",
-    "tabs"
+    "tabs",
+    "alarms"
   ],
   "host_permissions": [
     "https://meet.google.com/*"
@@ -32,6 +33,7 @@
   "action": {
     "default_icon": {
       "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     },
@@ -39,6 +41,7 @@
   },
   "icons": {
     "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   }

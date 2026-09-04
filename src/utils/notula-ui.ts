@@ -188,8 +188,33 @@ export function saveLine(ctx: NotulaContext, m: Omit<Meeting, 'entries'>): HTMLE
   }
 }
 
+/**
+ * The line for a meeting still going: where it will land when it ends, or
+ * where the part saved so far went. Save now writes what there is, and the end
+ * of the call writes the rest over it.
+ */
+export function liveLine(ctx: NotulaContext, m: Omit<Meeting, 'entries'>): HTMLElement | null {
+  const snapshot = ctx.snapshot();
+  const save: MeetingSave | undefined = snapshot?.saves[m.id];
+  if (!save && (snapshot?.status.state ?? 'notPaired') === 'notPaired') return null;
+  const dest: Destination | null = save?.workspace ? { workspace: save.workspace, folder: save.folder } : destinationFor(snapshot, m.meetingCode);
+  const code = m.meetingCode;
+  const meetingId = m.id;
+  const now = (button: HTMLElement): void => {
+    if (dest) ctx.send({ type: 'notula_save', meetingId });
+    else openDestMenu(ctx, button, null, { code, meetingId, pick: (chosen) => ctx.send({ type: 'notula_save', meetingId, workspace: chosen.workspace, folder: chosen.folder }) });
+  };
+  if (save?.state === 'saving') return whereLine(ctx, { text: 'Saving…' });
+  if (save?.state === 'saved' && !save.gone) {
+    return whereLine(ctx, { text: 'Saved to', dest, code, meetingId, acts: [['Open', () => ctx.send({ type: 'notula_open', meetingId })], ['Save now', now]] });
+  }
+  return whereLine(ctx, { text: 'Will be saved to', dest, code, meetingId, acts: [['Save now', now]] });
+}
+
 let menu: HTMLElement | null = null;
 let menuAnchor: HTMLElement | null = null;
+/** The tree the picker is in: the document, or the panel's closed shadow root. */
+let menuRoot: Node | null = null;
 
 /** Takes the picker down. `restore` gives focus back to the button it opened from. */
 export function closeDestMenu(restore = false): void {
@@ -197,13 +222,26 @@ export function closeDestMenu(restore = false): void {
   menu?.remove();
   menu = null;
   menuAnchor = null;
-  document.removeEventListener('mousedown', onOutside, true);
+  menuRoot?.removeEventListener('mousedown', onOutside, true);
+  document.removeEventListener('mousedown', onOutsideHost, true);
+  menuRoot = null;
   document.removeEventListener('keydown', onKey, true);
   if (restore) anchor?.focus();
 }
 
+/**
+ * A press anywhere but the picker closes it. Listened for on the picker's own
+ * tree: from outside a closed shadow root the path stops at the host, and every
+ * press inside the panel looked like a press outside the picker.
+ */
 function onOutside(e: Event): void {
   if (menu && !e.composedPath().includes(menu)) closeDestMenu();
+}
+
+/** The page around the panel, where the path cannot say more than which host was pressed. */
+function onOutsideHost(e: Event): void {
+  const host = menuRoot instanceof ShadowRoot ? menuRoot.host : null;
+  if (menu && host && !e.composedPath().includes(host)) closeDestMenu();
 }
 
 function onKey(e: KeyboardEvent): void {
@@ -460,7 +498,9 @@ function show(ctx: NotulaContext, anchor: HTMLElement, box: HTMLElement): void {
   ctx.container.appendChild(box);
   menu = box;
   menuAnchor = anchor;
-  document.addEventListener('mousedown', onOutside, true);
+  menuRoot = ctx.container.getRootNode();
+  menuRoot.addEventListener('mousedown', onOutside, true);
+  if (menuRoot !== document) document.addEventListener('mousedown', onOutsideHost, true);
   document.addEventListener('keydown', onKey, true);
 }
 

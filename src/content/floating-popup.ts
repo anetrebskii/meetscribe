@@ -13,7 +13,7 @@ import {
   renderScreen as renderNotulaScreen,
   saveLine,
   stageAfter,
-  whereLine,
+  liveLine,
 } from '../utils/notula-ui';
 import type { NotulaContext, UiStage } from '../utils/notula-ui';
 
@@ -674,6 +674,11 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
   // --- Toggle popup visibility (from toolbar icon) ---
 
   chrome.runtime.onMessage.addListener((message): undefined => {
+    // The language the service worker pushed for this call, so the selector says what Meet was told.
+    if (message.type === MSG.LANGUAGE_CHANGE && typeof message.language === 'string') {
+      langSelect.value = message.language;
+      return undefined;
+    }
     if (message.type === MSG.TOGGLE_POPUP) {
       isHidden = !isHidden;
       host.style.display = isHidden ? 'none' : '';
@@ -853,11 +858,13 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
     // Where this call will land, said before the file exists rather than after.
     if (meeting && connected(notulaCtx)) {
       const dest = destinationFor(notulaSnapshot, meeting.meetingCode);
-      const key = `${meeting.id}:${dest?.workspace ?? ''}:${dest?.folder ?? ''}`;
+      const save = notulaSnapshot?.saves[meeting.id];
+      const key = `${meeting.id}:${dest?.workspace ?? ''}:${dest?.folder ?? ''}:${save?.state ?? ''}:${save?.path ?? ''}`;
       if (footerWhereKey !== key) {
         footerWhereKey = key;
         footerRight.innerHTML = '';
-        footerRight.appendChild(whereLine(notulaCtx, { text: 'Will be saved to', dest, code: meeting.meetingCode, meetingId: meeting.id }));
+        const line = liveLine(notulaCtx, meeting);
+        if (line) footerRight.appendChild(line);
       }
       return;
     }
@@ -1003,13 +1010,30 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
         actionsEl.innerHTML = '<span class="delete-confirm">Delete? <button class="confirm-yes">Yes</button> <button class="confirm-no">No</button></span>';
         actionsEl.style.opacity = '1';
 
+        // Refused, or answered No: the buttons come back.
+        const restoreActions = (): void => {
+          actionsEl.innerHTML = `
+            <button class="meeting-action" data-action="rename" title="Rename">\u270E</button>
+            <button class="meeting-action" data-action="copy" title="Copy as Markdown">\u2398</button>
+            <button class="meeting-action" data-action="export" title="Export">\u2193</button>
+            <button class="meeting-action" data-action="delete" title="Delete">\u2715</button>
+          `;
+          actionsEl.style.opacity = '';
+        };
+
         actionsEl.querySelector('.confirm-yes')!.addEventListener('click', (ev) => {
           ev.stopPropagation();
           chrome.runtime.sendMessage({
             type: MSG.DELETE_MEETING,
             payload: { id: m.id },
           }).then((resp) => {
-            if (resp && !resp.ok) { loadMeetingsList(); return; }
+            // A call still going is refused, and saying so is the whole answer.
+            if (resp && !resp.ok) {
+              const line = actionsEl.querySelector('.delete-confirm');
+              if (line) line.textContent = String(resp.error ?? 'Could not delete');
+              setTimeout(restoreActions, 2400);
+              return;
+            }
             item.remove();
             // If deleted the current meeting, switch back to live view
             if (isCurrent) {
@@ -1025,14 +1049,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
 
         actionsEl.querySelector('.confirm-no')!.addEventListener('click', (ev) => {
           ev.stopPropagation();
-          // Restore original action buttons
-          actionsEl.innerHTML = `
-            <button class="meeting-action" data-action="rename" title="Rename">\u270E</button>
-            <button class="meeting-action" data-action="copy" title="Copy as Markdown">\u2398</button>
-            <button class="meeting-action" data-action="export" title="Export">\u2193</button>
-            <button class="meeting-action" data-action="delete" title="Delete">\u2715</button>
-          `;
-          actionsEl.style.opacity = '';
+          restoreActions();
         });
       }
     });
@@ -1572,11 +1589,18 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
         cursor: pointer;
       }
 
-      button:focus-visible,
-      input:focus-visible,
-      select:focus-visible {
+      button:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 1px;
+      }
+
+      /* A field being typed into keeps its own edge and colours it: a ring
+         around a box is two edges, and the outer one is what a scroller clips. */
+      input:focus-visible,
+      select:focus-visible,
+      textarea:focus-visible {
+        border-color: var(--accent);
+        outline: none;
       }
 
       .header {

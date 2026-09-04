@@ -7,6 +7,7 @@ import {
   renderConnect,
   renderOffers,
   renderScreen,
+  liveLine,
   saveLine,
   stageAfter,
 } from '../utils/notula-ui';
@@ -153,7 +154,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
 
   function showList(): void {
     currentView = 'list';
-    headerTitle.textContent = 'Notula';
+    headerTitle.textContent = 'Notula for Google Meet';
     btnBack.style.display = 'none';
     headerActions.style.display = 'none';
     footerEl.style.display = 'none';
@@ -298,10 +299,9 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
     const titleEl = item.querySelector('.meeting-item-title') as HTMLElement;
     const actionsEl = item.querySelector('.meeting-item-actions') as HTMLElement;
 
-    if (!isLive) {
-      const line = saveLine(notulaCtx, m);
-      if (line) item.appendChild(line);
-    }
+    // Under the name: where the call went, or where it will go while it is still on.
+    const line = isLive ? liveLine(notulaCtx, m) : saveLine(notulaCtx, m);
+    if (line) item.appendChild(line);
 
     // --- Action button handlers ---
 
@@ -364,13 +364,30 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
         actionsEl.innerHTML = '<span class="delete-confirm">Delete? <button class="confirm-yes">Yes</button> <button class="confirm-no">No</button></span>';
         actionsEl.style.opacity = '1';
 
+        // Refused, or answered No: the buttons come back.
+        const restoreActions = (): void => {
+          actionsEl.innerHTML = `
+            <button class="meeting-action" data-action="rename" title="Rename">\u270E</button>
+            <button class="meeting-action" data-action="copy" title="Copy as Markdown">\u2398</button>
+            <button class="meeting-action" data-action="export" title="Export">\u2193</button>
+            <button class="meeting-action" data-action="delete" title="Delete">\u2715</button>
+          `;
+          actionsEl.style.opacity = '';
+        };
+
         actionsEl.querySelector('.confirm-yes')!.addEventListener('click', (ev) => {
           ev.stopPropagation();
           chrome.runtime.sendMessage({
             type: MSG.DELETE_MEETING,
             payload: { id: m.id },
           }).then((resp) => {
-            if (resp && !resp.ok) { loadMeetings(); return; }
+            // A call still going is refused, and saying so is the whole answer.
+            if (resp && !resp.ok) {
+              const line = actionsEl.querySelector('.delete-confirm');
+              if (line) line.textContent = String(resp.error ?? 'Could not delete');
+              setTimeout(restoreActions, 2400);
+              return;
+            }
             item.remove();
             if (contentEl.children.length === 0) {
               contentEl.innerHTML = '<div class="empty-state">No meetings yet</div>';
@@ -380,13 +397,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
 
         actionsEl.querySelector('.confirm-no')!.addEventListener('click', (ev) => {
           ev.stopPropagation();
-          actionsEl.innerHTML = `
-            <button class="meeting-action" data-action="rename" title="Rename">\u270E</button>
-            <button class="meeting-action" data-action="copy" title="Copy as Markdown">\u2398</button>
-            <button class="meeting-action" data-action="export" title="Export">\u2193</button>
-            <button class="meeting-action" data-action="delete" title="Delete">\u2715</button>
-          `;
-          actionsEl.style.opacity = '';
+          restoreActions();
         });
       }
     });

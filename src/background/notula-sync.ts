@@ -203,8 +203,10 @@ export async function save(meetingId: string, manual = false): Promise<void> {
     ? { workspace: existing.workspace, folder: existing.folder }
     : await destinationFor(meeting.meetingCode);
   if (!manual) {
-    if (existing?.state === 'held' || existing?.state === 'saved') return;
-    if (!worthSaving(meeting)) {
+    // Held is a person's answer. Saved is not: a call saved while it was still
+    // going is written again at its end, with the rest of it.
+    if (existing?.state === 'held') return;
+    if (existing?.state !== 'saved' && !worthSaving(meeting)) {
       await setSave(meetingId, placed('tooShort', dest ?? NOWHERE));
       return;
     }
@@ -249,6 +251,11 @@ export async function save(meetingId: string, manual = false): Promise<void> {
       status = kind === 'unreachable' ? { state: 'appClosed' } : { state: 'noWorkspace' };
       await setSave(meetingId, placed('queued', dest, existing));
       await tell();
+      return;
+    }
+    // Edited in Notula since it was written: theirs stands, and what was saved stays saved.
+    if (kind === 'changed' && existing?.state === 'saved') {
+      await setSave(meetingId, existing);
       return;
     }
     await setSave(meetingId, placed('failed', dest, existing));

@@ -91,7 +91,10 @@ export interface ExtensionMessage {
 export interface Settings {
   enabled: boolean;
   dedupeWindowMs: number;
+  /** The caption language picked last, for a call with no memory of its own. */
   language: string;
+  /** The caption language picked during a call, by its meeting code: a recurring meeting is in the same language every time. */
+  languageByCode?: Record<string, string>;
 }
 
 export const DEFAULT_SETTINGS: Settings = {

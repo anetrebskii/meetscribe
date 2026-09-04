@@ -54,7 +54,13 @@ interface Session {
 
 const sessions = new Map<string, Session>();
 const tabSessionMap = new Map<number, string>(); // tabId → sessionId
-const keepaliveTimers = new Map<string, ReturnType<typeof setTimeout>>(); // sessionId → disconnect timer
+/**
+ * The alarm that ends a session's meeting once its tab has been gone for the
+ * grace period. An alarm outlives a service worker Chrome has put to sleep; a
+ * timer dies with it, which is how a closed tab used to leave a meeting live
+ * for good.
+ */
+const END_ALARM = 'end-session:';
 
 function getOrCreateSession(sessionId: string): Session {
   let s = sessions.get(sessionId);
@@ -198,12 +204,17 @@ notula.configure((message) => broadcastToPopup(message));
 // install is never told about a name it never used.
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'update') void notula.noteUpdate(details.previousVersion);
+  // An update or a reload empties session storage the same way a browser start does.
+  void sessionStateReady.then(sweepOrphans);
 });
 
 // The browser started: one of the three occasions the connection is checked,
 // and the moment a queue left over from yesterday goes out.
 chrome.runtime.onStartup.addListener(() => {
-  void sessionStateReady.then(() => notula.check());
+  void sessionStateReady.then(() => {
+    sweepOrphans();
+    return notula.check();
+  });
 });
 
 // --- Dynamic popup routing ---
@@ -253,12 +264,8 @@ chrome.runtime.onConnect.addListener((port) => {
       tabSessionMap.set(tabId, sessionId);
     }
 
-    // Cancel pending disconnect timer — tab reconnected
-    const existingTimer = keepaliveTimers.get(sessionId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      keepaliveTimers.delete(sessionId);
-    }
+    // The tab is back within the grace period: nothing ends.
+    void chrome.alarms.clear(END_ALARM + sessionId);
 
     port.onMessage.addListener(() => {
       // ping received
@@ -267,28 +274,10 @@ chrome.runtime.onConnect.addListener((port) => {
     port.onDisconnect.addListener(() => {
       const session = sessions.get(sessionId);
       if (session?.meetingCode) {
-        const code = session.meetingCode;
-        const timer = setTimeout(() => {
-          keepaliveTimers.delete(sessionId);
-          // Only end if the session still has the same code (no reconnect happened)
-          const s = sessions.get(sessionId);
-          if (s && s.meetingCode === code) {
-            if (s.meetingId) finishMeeting(s.meetingId, sessionId);
-            // Clean up session
-            clearEntries(sessionId);
-            sessions.delete(sessionId);
-            lastCaptionTime.delete(sessionId);
-            const stallTimer = captionStallTimers.get(sessionId);
-            if (stallTimer) { clearTimeout(stallTimer); captionStallTimers.delete(sessionId); }
-            if (tabId != null) tabSessionMap.delete(tabId);
-            scheduleSessionPersist();
-            // Update icon if no more live sessions
-            if (getLiveMeetingIds().length === 0) {
-              updateExtensionIcon(false);
-            }
-          }
-        }, KEEPALIVE_GRACE_MS);
-        keepaliveTimers.set(sessionId, timer);
+        // A reload or a dropped connection comes back within the grace; a
+        // closed tab does not, and the alarm ends the meeting whether or not
+        // this worker is still awake when the time comes.
+        void chrome.alarms.create(END_ALARM + sessionId, { when: Date.now() + KEEPALIVE_GRACE_MS });
       }
     });
   } else if (port.name === POPUP_PORT_NAME || port.name.startsWith(POPUP_PORT_NAME + ':')) {
@@ -410,8 +399,8 @@ function ensureMeeting(sessionId: string, meetingCode?: string): string {
   updateExtensionIcon(true);
   broadcastToPopup({ type: 'meeting_started', meeting }, sessionId);
 
-  // Push the stored language preference to Google Meet.
-  syncLanguageToMeet();
+  // Push the caption language this call was last held in, else the one picked last.
+  syncLanguageToMeet(code);
 
   // Start monitoring for caption data — if none arrives, ask content script to retry enabling captions
   scheduleCaptionStallCheck(sessionId);
@@ -424,7 +413,7 @@ function ensureMeeting(sessionId: string, meetingCode?: string): string {
  * mistake, or one whose captions never came - is dropped rather than kept as
  * an empty card; the rest are closed and offered to Notula.
  */
-function finishMeeting(meetingId: string, sessionId: string): void {
+function finishMeeting(meetingId: string, sessionId?: string): void {
   const meeting = getMeeting(meetingId);
   if (meeting && meeting.entries.length === 0 && meeting.notes.length === 0) {
     deleteMeeting(meetingId);
@@ -434,6 +423,57 @@ function finishMeeting(meetingId: string, sessionId: string): void {
   endMeeting(meetingId);
   broadcastToPopup({ type: 'meeting_ended', meetingId }, sessionId);
   void notula.onMeetingEnded(meetingId);
+}
+
+/** The grace ran out with the tab still gone: the meeting ends and the session is forgotten. */
+function endSession(sessionId: string): void {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  if (session.meetingId) finishMeeting(session.meetingId, sessionId);
+  clearEntries(sessionId);
+  sessions.delete(sessionId);
+  lastCaptionTime.delete(sessionId);
+  const stallTimer = captionStallTimers.get(sessionId);
+  if (stallTimer) {
+    clearTimeout(stallTimer);
+    captionStallTimers.delete(sessionId);
+  }
+  for (const [tabId, sid] of tabSessionMap) if (sid === sessionId) tabSessionMap.delete(tabId);
+  scheduleSessionPersist();
+  if (getLiveMeetingIds().length === 0) updateExtensionIcon(false);
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (!alarm.name.startsWith(END_ALARM)) return;
+  void sessionStateReady.then(() => endSession(alarm.name.slice(END_ALARM.length)));
+});
+
+/**
+ * A finished meeting with no transcript and no notes is nothing to keep, and
+ * one that ended before this rule existed is still on the list: it goes the
+ * next time the list is asked for. A live one is left alone, whatever it holds.
+ */
+function sweepEmpty(): void {
+  const live = new Set(getLiveMeetingIds());
+  for (const meeting of getMeetings()) {
+    if (live.has(meeting.id) || meeting.endTime === null) continue;
+    const full = getMeeting(meeting.id);
+    if (full && full.entries.length === 0 && full.notes.length === 0) deleteMeeting(meeting.id);
+  }
+}
+
+/**
+ * The browser has just started, so session storage is empty and nothing that
+ * is still marked live has a tab behind it: those meetings were left that way
+ * by a worker put to sleep before its grace ran out. They end now, and an
+ * empty one goes. A tab that has already reconnected keeps its meeting.
+ */
+function sweepOrphans(): void {
+  const live = new Set(getLiveMeetingIds());
+  for (const meeting of getMeetings()) {
+    if (meeting.endTime === null && !live.has(meeting.id)) finishMeeting(meeting.id);
+  }
+  sweepEmpty();
 }
 
 function scheduleCaptionStallCheck(sessionId: string, attempt = 1): void {
@@ -470,9 +510,14 @@ function scheduleCaptionStallCheck(sessionId: string, attempt = 1): void {
   captionStallTimers.set(sessionId, timer);
 }
 
-function syncLanguageToMeet(): void {
-  const { language } = getSettings();
-  if (!language || language === 'en') return;
+function syncLanguageToMeet(code: string): void {
+  const settings = getSettings();
+  const remembered = settings.languageByCode?.[code];
+  const language = remembered ?? settings.language;
+  // Meet's own default is English, so the last-picked language is only pushed
+  // when it is something else; a language remembered for this call is pushed
+  // whatever it is, because the last call may have moved Meet off it.
+  if (!language || (remembered === undefined && language === 'en')) return;
 
   setTimeout(async () => {
     try {
@@ -527,7 +572,7 @@ async function handleMessage(
           session.meetingCode = msg.meetingCode;
           scheduleSessionPersist();
           broadcastToPopup({ type: 'meeting_started', meeting: getMeeting(session.meetingId) }, sessionId);
-          syncLanguageToMeet();
+          syncLanguageToMeet(msg.meetingCode);
           break;
         }
 
@@ -550,7 +595,7 @@ async function handleMessage(
       session.meetingCode = msg.meetingCode;
       scheduleSessionPersist();
       ensureMeeting(sessionId, msg.meetingCode);
-      syncLanguageToMeet();
+      syncLanguageToMeet(msg.meetingCode);
       break;
     }
 
@@ -771,8 +816,13 @@ async function handleMessage(
           }).catch(() => {});
         }
       }
-      // Update settings with last language
-      updateSettings({ language: langMsg.language });
+      // The last language, and the language of this call, by its code.
+      const fromTab = sender.tab?.id;
+      const code = fromTab != null ? sessions.get(tabSessionMap.get(fromTab) ?? '')?.meetingCode : undefined;
+      updateSettings({
+        language: langMsg.language,
+        ...(code && code !== 'unknown' ? { languageByCode: { ...getSettings().languageByCode, [code]: langMsg.language } } : {}),
+      });
       // Save to recent languages list (max 5, deduplicated, most recent first)
       try {
         const stored = await chrome.storage.local.get('recentLanguages');
@@ -786,6 +836,7 @@ async function handleMessage(
     }
 
     case MSG.GET_MEETINGS: {
+      sweepEmpty();
       sendResponse({ meetings: getMeetings(), liveMeetingIds: getLiveMeetingIds() });
       return;
     }

@@ -84,6 +84,13 @@
       cursor: pointer;
     }
 
+    input:focus-visible,
+    select:focus-visible,
+    textarea:focus-visible {
+      border-color: var(--accent);
+      outline: none;
+    }
+
     button:focus-visible {
       outline: 2px solid var(--accent);
       outline-offset: 1px;
@@ -860,7 +867,7 @@
 <body>
   <div class="header">
     <button class="btn-back" id="btn-back" style="display:none" title="Back">&larr;</button>
-    <span class="header-title" id="header-title">Notula</span>
+    <span class="header-title" id="header-title">Notula for Google Meet</span>
     <div class="header-actions" id="header-actions" style="display:none">
       <button class="btn-icon" id="detail-copy" title="Copy as Markdown">&#x2398;</button>
       <button class="btn-icon" id="detail-export" title="Download .md">&#x2193;</button>
