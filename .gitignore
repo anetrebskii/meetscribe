@@ -2,3 +2,13 @@ node_modules/
 dist/
 pnpm-lock.yaml
 release/
+journal.db
+*.sqlite-wal
+*.sqlite-shm
+*.db-wal
+*.db-shm
+.octarine/
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.trash/
+.DS_Store
