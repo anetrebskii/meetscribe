@@ -2,6 +2,8 @@
 
 Chrome extension for live Google Meet transcription with meeting history.
 
+**[Install from the Chrome Web Store](https://chromewebstore.google.com/detail/notula-for-google-meet/egpbmkbnahnhjggmeemnkbblnpedcfkj)**
+
 ![Chrome](https://img.shields.io/badge/Chrome-Extension-blue)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-green)
 
@@ -18,6 +20,10 @@ Chrome extension for live Google Meet transcription with meeting history.
 - **Save to a Git repo** - optional, via [Notula Desktop](https://notula.org). Pick a repository and a folder, and a finished call is written there as ordinary Markdown
 
 ## Install
+
+### From the Chrome Web Store
+
+[Notula for Google Meet](https://chromewebstore.google.com/detail/notula-for-google-meet/egpbmkbnahnhjggmeemnkbblnpedcfkj) - this is the published build and it updates itself.
 
 ### From Release
 
