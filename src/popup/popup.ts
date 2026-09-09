@@ -2,7 +2,7 @@ import { MSG, POPUP_PORT_NAME, type Meeting, type TranscriptEntry, type NoteEntr
 import type { PairStage, Snapshot as NotulaSnapshot } from '../background/notula-sync';
 import {
   AWAITING_POLL_MS,
-  NOTULA_SITE,
+  notulaUrl,
   brainLink,
   defaultLine,
   renderConnect,
@@ -51,6 +51,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
       } catch { /* service worker restarting */ }
     },
     container: document.body,
+    surface: 'popup',
   };
 
   function startAwaiting(): void {
@@ -83,7 +84,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
     const show = renderScreen(notulaCtx, screenEl, pairStage, pairCode, {
       later: leaveScreen,
       get: () => {
-        void chrome.tabs.create({ url: NOTULA_SITE });
+        void chrome.tabs.create({ url: notulaUrl('/', 'popup', 'get') });
         pairStage = 'awaiting';
         startAwaiting();
         renderNotula();
@@ -101,7 +102,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
       offersEl.style.display = listing ? '' : 'none';
       defaultEl.style.display = listing ? '' : 'none';
       footerEl.style.display = 'flex';
-      if (listing) footerLeft.innerHTML = brainLink();
+      if (listing) footerLeft.innerHTML = brainLink('popup');
     }
     if (listing && !show) void loadMeetings();
   }
@@ -160,7 +161,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
     btnBack.style.display = 'none';
     headerActions.style.display = 'none';
     footerEl.style.display = 'flex';
-    footerLeft.innerHTML = brainLink();
+    footerLeft.innerHTML = brainLink('popup');
     offersEl.style.display = '';
     defaultEl.style.display = '';
     viewingMeetingId = null;

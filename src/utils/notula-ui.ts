@@ -15,6 +15,14 @@ import type { PairStage, Snapshot } from '../background/notula-sync';
  */
 
 export const NOTULA_SITE = 'https://notula.org';
+
+/** The two places a link to the site can be on: the panel inside Meet, and the toolbar popup. */
+export type Surface = 'meet-panel' | 'popup';
+
+/** A link out to the site, tagged with where it was and what it was, so the site can tell the two surfaces and the two links apart. */
+export function notulaUrl(path: string, surface: Surface, link: string): string {
+  return `${NOTULA_SITE}${path}?utm_source=notula-for-meet&utm_medium=extension&utm_content=${surface}-${link}`;
+}
 /** How long Undo stays on a card after a save. */
 export const UNDO_WINDOW_MS = 60_000;
 /** The waiting screens ask again this often; nothing else ever polls. */
@@ -28,6 +36,7 @@ const CHEVRON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stro
 export type UiStage = 'idle' | 'explaining' | 'awaiting' | 'pairing';
 
 export interface NotulaContext {
+  surface: Surface;
   snapshot(): Snapshot | null;
   send(message: Record<string, unknown>): void;
   /** Menus are positioned inside this; it has to be `position: relative`. */
@@ -513,8 +522,8 @@ function show(ctx: NotulaContext, anchor: HTMLElement, box: HTMLElement): void {
  * somebody who has not paired yet - once Notula is connected that screen is
  * gone and the question it answers is not.
  */
-export function brainLink(): string {
-  return `<a class="why" href="${NOTULA_SITE}/ai-brain" target="_blank" rel="noopener">Build AI brain with Notula</a>`;
+export function brainLink(surface: Surface): string {
+  return `<a class="why" href="${notulaUrl('/ai-brain', surface, 'ai-brain')}" target="_blank" rel="noopener">Build AI brain with Notula</a>`;
 }
 
 /** The line under the header: an offer, a wait, or nothing while everything is fine. */
@@ -540,7 +549,7 @@ export function renderScreen(
   if (stage === 'explaining') {
     html = `<h3>Save meetings to your Git repo</h3>
       <p>Notula is a desktop app. It writes each finished call into a Markdown file in your repository - on your disk, no account, no server. This extension keeps working without it.</p>
-      <p>${brainLink()}</p>
+      <p>${brainLink(ctx.surface)}</p>
       <div class="actions"><button type="button" class="ghost" data-act="later">Not now</button><button type="button" class="primary" data-act="get">Get Notula</button></div>`;
   } else if (stage === 'awaiting') {
     html = `<h3>Waiting for Notula</h3>

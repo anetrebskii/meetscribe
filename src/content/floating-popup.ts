@@ -5,7 +5,7 @@ import type { Snapshot as NotulaSnapshot, PairStage } from '../background/notula
 import {
   AWAITING_POLL_MS,
   LINK_ICON,
-  NOTULA_SITE,
+  notulaUrl,
   brainLink,
   connected,
   destinationFor,
@@ -224,6 +224,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
     snapshot: () => notulaSnapshot,
     send: (message) => sendNotula(message),
     container,
+    surface: 'meet-panel',
   };
 
   btnBackLive.addEventListener('click', () => {
@@ -681,7 +682,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
         break;
       case 'meetings':
         popupTitle.textContent = 'Meetings';
-        footerLeft.innerHTML = brainLink();
+        footerLeft.innerHTML = brainLink('meet-panel');
         footerRight.textContent = '';
         footerWhereKey = '';
         loadMeetingsList();
@@ -1235,7 +1236,7 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
     const show = renderNotulaScreen(notulaCtx, screenEl, pairStage, pairCode, {
       later: leaveScreen,
       get: () => {
-        window.open(NOTULA_SITE, '_blank', 'noopener');
+        window.open(notulaUrl('/', 'meet-panel', 'get'), '_blank', 'noopener');
         pairStage = 'awaiting';
         startAwaiting();
         renderNotula();
