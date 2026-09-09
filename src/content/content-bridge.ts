@@ -73,7 +73,8 @@ import { MSG, KEEPALIVE_PORT_NAME } from '../utils/types';
       data.type === MSG.RTC_DEVICE_INFO ||
       data.type === MSG.RTC_CHAT_MESSAGE ||
       data.type === MSG.INTERCEPTOR_READY ||
-      data.type === MSG.MEETING_CODE
+      data.type === MSG.MEETING_CODE ||
+      data.type === MSG.LANGUAGE_OBSERVED
     ) {
       if (isContextInvalidated()) return;
       try {

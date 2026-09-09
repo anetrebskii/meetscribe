@@ -65,6 +65,8 @@ export const MSG = {
   CLEAR_TRANSCRIPT: 'clear_transcript',
   INTERCEPTOR_READY: 'interceptor_ready',
   LANGUAGE_CHANGE: 'language_change',
+  LANGUAGE_OBSERVED: 'language_observed',
+  CAPTIONS_ENABLING: 'captions_enabling',
   GET_MEETINGS: 'get_meetings',
   RENAME_MEETING: 'rename_meeting',
   GET_CURRENT_MEETING: 'get_current_meeting',

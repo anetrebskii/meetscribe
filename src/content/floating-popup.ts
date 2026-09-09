@@ -343,7 +343,9 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
     try {
       const stored = await chrome.storage.local.get(['recentLanguages', 'settings']);
       recentLanguages = stored.recentLanguages ?? [];
-      const lastLang = stored.settings?.language ?? '';
+      // The language this call is remembered in, else the one picked last.
+      const code = location.pathname.match(/^\/([a-z]{3}-[a-z]{4}-[a-z]{3})$/)?.[1];
+      const lastLang = (code && stored.settings?.languageByCode?.[code]) || stored.settings?.language || '';
 
       langSelect.innerHTML = '';
 
@@ -1317,6 +1319,10 @@ import type { NotulaContext, UiStage } from '../utils/notula-ui';
           case 'captions_missing':
             captionsMissing = true;
             renderPlaceholder();
+            break;
+
+          case 'language_set':
+            langSelect.value = message.language;
             break;
 
           case 'meeting_snapshot':

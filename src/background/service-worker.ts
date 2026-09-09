@@ -415,7 +415,7 @@ function ensureMeeting(sessionId: string, meetingCode?: string): string {
   broadcastToPopup({ type: 'meeting_started', meeting }, sessionId);
 
   // Push the caption language this call was last held in, else the one picked last.
-  syncLanguageToMeet(code);
+  syncLanguageToMeet(code, sessionId);
 
   // Start monitoring for caption data — if none arrives, ask content script to retry enabling captions
   scheduleCaptionStallCheck(sessionId);
@@ -525,28 +525,42 @@ function scheduleCaptionStallCheck(sessionId: string, attempt = 1): void {
   captionStallTimers.set(sessionId, timer);
 }
 
-function syncLanguageToMeet(code: string): void {
+function tabForSession(sessionId: string): number | undefined {
+  for (const [tabId, sid] of tabSessionMap) if (sid === sessionId) return tabId;
+  return undefined;
+}
+
+/**
+ * The caption language a call is meant to be in, told to its own tab as soon
+ * as the code is known: the one remembered for this code, else the one picked
+ * last. The page holds it until Meet is ready to take it, so there is nothing
+ * to wait for here. Meet's own default is English, so the last-picked
+ * language is only pushed when it is something else; a language remembered
+ * for this call is pushed whatever it is, because the last call may have
+ * moved Meet off it.
+ */
+function syncLanguageToMeet(code: string, sessionId: string): void {
   const settings = getSettings();
   const remembered = settings.languageByCode?.[code];
   const language = remembered ?? settings.language;
-  // Meet's own default is English, so the last-picked language is only pushed
-  // when it is something else; a language remembered for this call is pushed
-  // whatever it is, because the last call may have moved Meet off it.
   if (!language || (remembered === undefined && language === 'en')) return;
+  const tabId = tabForSession(sessionId);
+  if (tabId == null) return;
+  chrome.tabs.sendMessage(tabId, { type: MSG.LANGUAGE_CHANGE, language }).catch(() => {});
+}
 
-  setTimeout(async () => {
-    try {
-      const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
-      for (const tab of tabs) {
-        if (tab.id) {
-          chrome.tabs.sendMessage(tab.id, {
-            type: MSG.LANGUAGE_CHANGE,
-            language,
-          }).catch(() => {});
-        }
-      }
-    } catch { /* silent */ }
-  }, 5000);
+/** The last language, and the language of this call, by its code. */
+async function rememberLanguage(language: string, sessionId: string | null): Promise<void> {
+  const code = sessionId ? sessions.get(sessionId)?.meetingCode : undefined;
+  updateSettings({
+    language,
+    ...(code && code !== 'unknown' ? { languageByCode: { ...getSettings().languageByCode, [code]: language } } : {}),
+  });
+  try {
+    const stored = await chrome.storage.local.get('recentLanguages');
+    const recent: string[] = stored.recentLanguages ?? [];
+    await chrome.storage.local.set({ recentLanguages: [language, ...recent.filter((l) => l !== language)].slice(0, 5) });
+  } catch { /* silent */ }
 }
 
 // --- Message handling ---
@@ -576,6 +590,8 @@ async function handleMessage(
       if (!sessionId) break;
       const msg = message as unknown as { meetingCode: string };
       const session = getOrCreateSession(sessionId);
+      // The tab is known from here on, ahead of its keepalive port.
+      if (sender.tab?.id != null) tabSessionMap.set(sender.tab.id, sessionId);
 
       if (session.meetingId) {
         const meeting = getMeeting(session.meetingId);
@@ -587,7 +603,7 @@ async function handleMessage(
           session.meetingCode = msg.meetingCode;
           scheduleSessionPersist();
           broadcastToPopup({ type: 'meeting_started', meeting: getMeeting(session.meetingId) }, sessionId);
-          syncLanguageToMeet(msg.meetingCode);
+          syncLanguageToMeet(msg.meetingCode, sessionId);
           break;
         }
 
@@ -610,7 +626,7 @@ async function handleMessage(
       session.meetingCode = msg.meetingCode;
       scheduleSessionPersist();
       ensureMeeting(sessionId, msg.meetingCode);
-      syncLanguageToMeet(msg.meetingCode);
+      syncLanguageToMeet(msg.meetingCode, sessionId);
       break;
     }
 
@@ -820,32 +836,22 @@ async function handleMessage(
     }
 
     case MSG.LANGUAGE_CHANGE: {
-      // Relay to content script, which will forward to MAIN world
+      // Picked in the panel of one tab: that tab's page is told, and no other.
       const langMsg = message as unknown as { language: string };
-      const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
-      for (const tab of tabs) {
-        if (tab.id) {
-          chrome.tabs.sendMessage(tab.id, {
-            type: MSG.LANGUAGE_CHANGE,
-            language: langMsg.language,
-          }).catch(() => {});
-        }
-      }
-      // The last language, and the language of this call, by its code.
       const fromTab = sender.tab?.id;
-      const code = fromTab != null ? sessions.get(tabSessionMap.get(fromTab) ?? '')?.meetingCode : undefined;
-      updateSettings({
-        language: langMsg.language,
-        ...(code && code !== 'unknown' ? { languageByCode: { ...getSettings().languageByCode, [code]: langMsg.language } } : {}),
-      });
-      // Save to recent languages list (max 5, deduplicated, most recent first)
-      try {
-        const stored = await chrome.storage.local.get('recentLanguages');
-        const recent: string[] = stored.recentLanguages ?? [];
-        const filtered = recent.filter((l: string) => l !== langMsg.language);
-        filtered.unshift(langMsg.language);
-        await chrome.storage.local.set({ recentLanguages: filtered.slice(0, 5) });
-      } catch { /* silent */ }
+      if (fromTab != null) {
+        chrome.tabs.sendMessage(fromTab, { type: MSG.LANGUAGE_CHANGE, language: langMsg.language }).catch(() => {});
+      }
+      await rememberLanguage(langMsg.language, sessionId);
+      sendResponse({ ok: true });
+      return;
+    }
+
+    case MSG.LANGUAGE_OBSERVED: {
+      // Picked inside Meet itself: remembered the same way, and the panel's selector follows.
+      const langMsg = message as unknown as { language: string };
+      await rememberLanguage(langMsg.language, sessionId);
+      if (sessionId) broadcastToPopup({ type: 'language_set', language: langMsg.language }, sessionId);
       sendResponse({ ok: true });
       return;
     }
